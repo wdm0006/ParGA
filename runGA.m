@@ -44,11 +44,12 @@ tic;
 % where you will enter in the fitness function to be minimized.
 
 %% Defining solution space and parameters
-mins=rand(1,10);
-maxes=rand(1,10)+ones(1,10);
-rate=0.15;
-kurt=10;
 
+mins=[0.01,0.01,.1,0.01,0.01,0.01,0.1,0.01];
+maxes=[0.95,0.99,13,0.2,0.999999,0.77,100,0.667];
+rate=0.08;
+kurt=10;
+crossover=2;
 %% Creating the Globe
 % Parameter list:
 %       num_gens, population size, mins, maxes 
@@ -56,7 +57,7 @@ kurt=10;
 %NOTE: population size should be divisible by number of populations, or
 %else the merge of populations will fail.
 
-gen_sample1=Globe(4,1000,64,mins,maxes,rate,kurt);
+gen_sample1=Globe(@sample_fn,4,1000,16,mins,maxes,kurt,rate,crossover);
 
 %% Initial Evolution
 % evolves one epoch in each of the still segregated populations

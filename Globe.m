@@ -8,10 +8,12 @@ classdef Globe < handle
         numPops
         ku
         ra
+        cn
+        ff
     end
     
     methods
-        function obj=Globe(np,numGens,ps,mins,maxes,k,r)
+        function obj=Globe(fit,np,numGens,ps,mins,maxes,k,r,n)
             %constructor
             obj.numGenerations=numGens;
             obj.pop_size=ps;
@@ -20,10 +22,12 @@ classdef Globe < handle
             obj.ma=maxes;
             obj.numPops=np;
             obj.ku=k;
+            obj.cn=n;
             obj.ra=r;
+            obj.ff=fit;
             %initializing the 4 populations
             for j=1:obj.numPops
-                obj.nations{1,j}=Population(ps, mins, maxes,obj.ku,obj.ra);
+                obj.nations{1,j}=Population(obj.ff,ps, mins, maxes,obj.ku,obj.ra,obj.cn);
             end
         end
         
@@ -52,7 +56,7 @@ classdef Globe < handle
                     counter=counter+1;
                end
             end
-            obj.nations=Population(obj.pop_size, obj.mi, obj.ma,obj.ku,obj.ra);
+            obj.nations=Population(obj.ff,obj.pop_size, obj.mi, obj.ma,obj.ku,obj.ra,obj.cn);
             obj.nations=obj.nations.setPop(newpop);
         end
         

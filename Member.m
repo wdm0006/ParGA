@@ -4,34 +4,28 @@ classdef Member < handle
         gene;
         maxes;
         mins;
+        fitness_fn
     end
     
     methods
-        function obj=Member(mi,ma)
+        function obj=Member(ff,mi,ma)
             %constructor
             %declares the bounds for the parameters
             obj.gene=zeros(1,length(mi));
             obj.mins=mi;
             obj.maxes=ma;
+            obj.fitness_fn=ff;
         end
-
+        
         
         function out=trigger(obj)
-%             This section should contain any simulation, function calls 
-%             or anything else included in calculating the fitness of the Objective
-%             
-%             out should be the fitness, and nothing else.
-%             
-%             note that this code is set for fitness to be MINIMIZED
-            
-            out=rand;
-
+            out=obj.fitness_fn(obj.gene);
         end
         
         function w = randomizeWeights(obj)
             %randomize the controller constants to a scale (must be positive)
             for j=1:length(obj.gene)
-                obj.gene(j)=rand*(obj.maxes(j)-obj.mins(j))+obj.mins(j);
+                obj.gene(j)=(rand*(obj.maxes(j)-obj.mins(j)))+obj.mins(j);
             end
             w=obj.gene;
         end

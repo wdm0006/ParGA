@@ -18,6 +18,7 @@
 \usepackage{amsfonts}
 \usepackage{color}
 \usepackage{listings}
+
 \lstset{ %
 language=FORTRAN,                % choose the language of the code
 basicstyle=\footnotesize,       % the size of the fonts that are used for the code
@@ -52,7 +53,7 @@ escapeinside={\%*}{*)}          % if you want to add a comment within your code
 %\clearpage
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{abstract}
-Genetic Algorithms (GAs) are frequently used to find solutions to optimization and search problems.  They find solutions to these problems using techniques based on the concepts of natural evolution, namely mutation, inheritances and selection.  The mechanics of the algorithm itself lends it to parallelization, which can speed it up by huge amounts, even on standard computers.  ParGA leverages the MATLAB parallel computing toolbox to parallelize a real-coded, single crossover GA.  It's modular design allows an objective function and fitness function to be simply plugged in.
+Genetic Algorithms (GAs) are frequently used to find solutions to optimization and search problems. A GA finds solutions to these problems using techniques based on the concepts of natural evolution, namely mutation, inheritances and selection.  The mechanics of the algorithm itself lends it to parallelization, which can speed it up by large amounts, even on standard computers.  ParGA leverages the MATLAB parallel computing toolbox to parallelize a real-coded, single crossover GA.  It's modular design allows an objective function and fitness function to be simply plugged in.
 \end{abstract}
 
 \section{Framework}
@@ -67,9 +68,11 @@ The algorithm uses single crossover breeding.  Future versions will include n-or
 
 After this is done, the new generation is mutated at a user supplied rate and by a user supplied amount.  The mutation is performed with the following formula:
 
+\begin{minipage}{0.43\textwidth}
 \begin{lstlisting}
 weights(index)=weights(index)*(((randn-1)/obj.kurt)+1); 
 \end{lstlisting}
+\end{minipage}
 
 Where obj.kurt is the user supplied kurtosis value. The larger it is, the smaller the mutations will be. 
 
@@ -94,6 +97,7 @@ The legacy code was written in FORTRAN and used input and output files, which po
 
 This is done in FORTRAN by using the IARGC() and GETARG() commands.  IARGC() returns the number of parameters passed through command line, and GETARG() returns those parameters.  Say, for instance, that you wanted to pass one variable, rpvar, to a program through command line.  To do this, you can use a code similar to the one below to get the arguments.
 
+\begin{minipage}{0.43\textwidth}
 \begin{lstlisting}
         integer :: jcount
         real :: jtemp
@@ -106,12 +110,15 @@ This is done in FORTRAN by using the IARGC() and GETARG() commands.  IARGC() ret
            rpvar=DBLE(jtemp)
         end if
 \end{lstlisting}
+\end{minipage}
 
 The variable, rpvar, can then be used to compute some kind of fitness (to be minimized), and the fitness is printed to command line with the code:
 
+\begin{minipage}{0.43\textwidth}
 \begin{lstlisting}
 	print*, "", fitness
 \end{lstlisting}
+\end{minipage}
 
 This will write the value stored in the variable, fitness, to the command line, where it can be read by another program.  
 
@@ -121,6 +128,7 @@ In the case of the SRM code, the FORTRAN wrapper function takes in 8 variables, 
 
 The entire trigger function in this case is:
 
+\begin{minipage}{0.43\textwidth}
 \begin{lstlisting}
 function out=trigger(obj)
     command=sprintf('SRM_serve.exe %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0', obj.gene);
@@ -128,9 +136,11 @@ function out=trigger(obj)
      out=str2double(result);
 end
 \end{lstlisting}
+\end{minipage}
 
 Next, the run script is written to actually build and perform the algorithm.
 
+\begin{minipage}{0.43\textwidth}
 \begin{lstlisting}
 close all; clear all;clc;
 
@@ -153,11 +163,13 @@ gen_sample3=gen_sample2.mergeCommunities;
 
 gen_sample4=gen_sample3.evolveGlobe;
 \end{lstlisting}
+\end{minipage}
 
 This will create an optimization with 4 neighborhoods, 1000 generations per epoch, 8 members per population, a mutation rate of 5\%, and a kurtosis parameter of 10.  Line 14 evolves the 4 seperate neighborhoods 1000 gerenations each.  Line 16 takes the best quarter of each neighborhood and combines them into one population.  Finally, line 18 evolves the combined population for 1000 generations.  The final population can be evolved again as many times as desired by calling gen\_sample4.evolveGlobe again. 
 
 Once this is completed, the final solution can be printed with the code:
 
+\begin{minipage}{0.43\textwidth}
 \begin{lstlisting}
 popfitness=gen_sample4.nations.popfitness;
 [empty,ix]=sort(popfitness);
@@ -171,6 +183,7 @@ plot(plot_data);
 ylabel('Thrust');
 title('Neutral Thrust Result')
 \end{lstlisting}
+\end{minipage}
 
 Where the program, SRM\_serve\_print.exe, returns the entire thrust time series.
 
