@@ -64,7 +64,7 @@ The details of the algorithm itself pertain mostly to it's style of breeding, mu
 
 \subsection{Breeding}
 
-The algorithm uses single crossover breeding.  Future versions will include n-order crossover, where the user can select 1,2 or n crossovers.  In each breeding, the most fit half of the generation continues on unmodified into the next generation.  The 2nd half of the new generation is formed by using single crossover breeding on random members of the last population, with those which are most fit being most likely to breed.
+The algorithm uses crossover breeding.  The user can select single, double, or no crossover (no crossover uses only mutation for variance).  In each breeding regardless of the crossover method used, the most fit half of the generation continues on unmodified into the next generation.  The 2nd half of the new generation is formed by using selected crossover breeding on random members of the last population, with those which are most fit being most likely to breed.
 
 After this is done, the new generation is mutated at a user supplied rate and by a user supplied amount.  The mutation is performed with the following formula:
 
@@ -87,6 +87,7 @@ While the framework will run without error in serial, if the user has the MATLAB
 The code can also be run on more powerful machines such as clusters, with the configuration requirements depending on the cluster itself.  
 
 Generally, the ideal number of cores to have is however many members per population you have, plus one for overhead.  Any more will not help very much if at all. 
+
 \section{Case Study: Solid Rocket Motor Design}
 
 In this case study, a solid rocket motor (SRM) legacy code was acquired from Dr. Hartfield, which was to be used to design a SRM to either have a specific thrust or chamber pressure output.  The desired output for thrust is a neutral 60,000 UNITS, and the desired output for chamber pressure is a neutral 500 UNITS.  
@@ -124,17 +125,23 @@ This will write the value stored in the variable, fitness, to the command line, 
 
 \subsection{MATLAB Integration}
 
-In the case of the SRM code, the FORTRAN wrapper function takes in 8 variables, uses them to calculate a thrust or chamber pressure profile, and returns the percent RMS error.  In both cases, the RMS error is to be minimized, with a goal of under 1\%.  As with any optimization problem solved with ParGA, the first step is to modify the trigger function in Member.m.  This function should contain all code to calculate the fitness of the Member, given the gene, stored in obj.gene. 
-
-The entire trigger function in this case is:
+In the case of the SRM code, the FORTRAN wrapper function takes in 8 variables, uses them to calculate a thrust or chamber pressure profile, and returns the percent RMS error.  In both cases, the RMS error is to be minimized, with a goal of under 1\%.  As with any optimization problem solved with ParGA, the first step is to write the fitness function.   This function should contain all code to calculate the fitness of the Member, given the gene.  The general form of a fitness function is:
 
 \begin{minipage}{0.43\textwidth}
 \begin{lstlisting}
-function out=trigger(obj)
-    command=sprintf('SRM_serve.exe %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0', obj.gene);
-    [~,result]=system(command);
-     out=str2double(result);
-end
+function out=sample_fn(gene)
+ %calculate fitness using gene and set out equal to it
+\end{lstlisting}
+\end{minipage}
+
+The entire fitness function in this case study is:
+
+\begin{minipage}{0.43\textwidth}
+\begin{lstlisting}
+function out=sample_fn(gene)
+command=sprintf('SRM_serve.exe %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0 %20.10fd0', gene);
+[~,result]=system(command);
+out=str2double(result);
 \end{lstlisting}
 \end{minipage}
 
@@ -144,18 +151,15 @@ Next, the run script is written to actually build and perform the algorithm.
 \begin{lstlisting}
 close all; clear all;clc;
 
-matlabpool;    %open local 
-  
-mins=[0.01,0.01,.1,0.01,0.01,
-	0.01,0.1,0.01];
-
+mins=[0.01,0.01,.1,0.01,
+	0.01,0.01,0.1,0.01];
 maxes=[0.95,0.99,13,0.2,
 	0.999999,0.77,100,0.667];
-	
-rate=0.05;
+rate=0.08;
 kurt=10;
+crossover=0;
 
-gen_sample1=Globe(4,1000,8,mins,maxes,kurt,rate);
+gen_sample1=Globe(@sample_fn,4,1000,64,mins,maxes,kurt,rate,crossover);
 
 gen_sample2=gen_sample1.evolveCommunities;
 
@@ -165,7 +169,7 @@ gen_sample4=gen_sample3.evolveGlobe;
 \end{lstlisting}
 \end{minipage}
 
-This will create an optimization with 4 neighborhoods, 1000 generations per epoch, 8 members per population, a mutation rate of 5\%, and a kurtosis parameter of 10.  Line 14 evolves the 4 seperate neighborhoods 1000 gerenations each.  Line 16 takes the best quarter of each neighborhood and combines them into one population.  Finally, line 18 evolves the combined population for 1000 generations.  The final population can be evolved again as many times as desired by calling gen\_sample4.evolveGlobe again. 
+This will create an optimization with 4 neighborhoods, 1000 generations per epoch, 64 members per population, a mutation rate of 8\%, and a kurtosis parameter of 10.  No crossover will be used, so mutation will be the sole mode of variation.  Line 14 evolves the 4 separate neighborhoods 1000 generations each.  Line 16 takes the best quarter of each neighborhood and combines them into one population.  Finally, line 18 evolves the combined population for 1000 generations.  The final population can be evolved again as many times as desired by calling gen\_sample4.evolveGlobe again. 
 
 Once this is completed, the final solution can be printed with the code:
 

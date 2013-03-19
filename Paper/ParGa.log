@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.1415926-2.3-1.40.12 (MiKTeX 2.9) (preloaded format=pdflatex 2012.10.8)  18 MAR 2013 15:51
+This is pdfTeX, Version 3.1415926-2.3-1.40.12 (MiKTeX 2.9) (preloaded format=pdflatex 2012.10.8)  19 MAR 2013 13:56
 entering extended mode
 **C:/Users/Will/Documents/GitHub/ParGA/Paper/ParGa.tex
 (C:/Users/Will/Documents/GitHub/ParGA/Paper/ParGa.tex
@@ -630,7 +630,7 @@ File: umsb.fd 2009/06/22 v3.00 AMS symbols B
 
 
 ]
-Underfull \hbox (badness 1694) in paragraph at lines 98--99
+Underfull \hbox (badness 1694) in paragraph at lines 99--100
 []\T1/ptm/m/n/10 This is done in FOR-TRAN by us-ing the
  []
 
@@ -641,10 +641,10 @@ Underfull \vbox (badness 10000) has occurred while \output is active []
 <thrust.PNG, id=13, 421.575pt x 316.18124pt>
 File: thrust.PNG Graphic file (type png)
  <use thrust.PNG>
-Package pdftex.def Info: thrust.PNG used on input line 209.
+Package pdftex.def Info: thrust.PNG used on input line 213.
 (pdftex.def)             Requested size: 216.81pt x 162.61081pt.
 
-Overfull \hbox (13.68317pt too wide) in paragraph at lines 209--210
+Overfull \hbox (13.68317pt too wide) in paragraph at lines 213--214
  [][] 
  []
 
@@ -662,13 +662,13 @@ Before submitting the final camera ready copy, remember to:
 [3 <C:/Users/Will/Documents/GitHub/ParGA/Paper/thrust.PNG (PNG copy)>]
 (C:\Users\Will\Documents\GitHub\ParGA\Paper\ParGa.aux) ) 
 Here is how much of TeX's memory you used:
- 5413 strings out of 494045
- 73777 string characters out of 3145972
- 279752 words of memory out of 3000000
- 8624 multiletter control sequences out of 15000+200000
+ 5419 strings out of 494045
+ 73840 string characters out of 3145972
+ 287752 words of memory out of 3000000
+ 8630 multiletter control sequences out of 15000+200000
  109645 words of font info for 123 fonts, out of 3000000 for 9000
  715 hyphenation exceptions out of 8191
- 32i,9n,49p,637b,1466s stack positions out of 5000i,500n,10000p,200000b,50000s
+ 32i,9n,49p,642b,1466s stack positions out of 5000i,500n,10000p,200000b,50000s
 {C:/Program Files (x86)
 /MiKTeX 2.9/fonts/enc/dvips/fontname/8r.enc}<C:/Program Files (x86)/MiKTeX 2.9/
 fonts/type1/public/amsfonts/cm/cmmi10.pfb><C:/Program Files (x86)/MiKTeX 2.9/fo
@@ -677,7 +677,7 @@ nts/type1/public/amsfonts/cm/cmr10.pfb><C:/Program Files (x86)/MiKTeX 2.9/fonts
 pe1/urw/times/utmb8a.pfb><C:/Program Files (x86)/MiKTeX 2.9/fonts/type1/urw/tim
 es/utmbi8a.pfb><C:/Program Files (x86)/MiKTeX 2.9/fonts/type1/urw/times/utmr8a.
 pfb><C:/Program Files (x86)/MiKTeX 2.9/fonts/type1/urw/times/utmri8a.pfb>
-Output written on ParGa.pdf (3 pages, 99054 bytes).
+Output written on ParGa.pdf (3 pages, 99647 bytes).
 PDF statistics:
  42 PDF objects out of 1000 (max. 8388607)
  0 named destinations out of 1000 (max. 500000)

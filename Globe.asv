@@ -43,7 +43,7 @@ classdef Globe < handle
         end
         
         function obj=mergeCommunities(obj)
-            %combining the best members of each population into one population
+            %combining the best 25% of each population into one population
             fprintf('\nCombined Population');
             fprintf('\nMost fit citizens of Generation:\n');
             newpop=cell(1,obj.pop_size);
@@ -75,13 +75,7 @@ classdef Globe < handle
             obj.ku=k;
         end
         
-        function obj=setRate(obj,r)
-            obj.ra=r;
-        end
-        
-        function obj=selectCrossover(obj,c)
-            obj.cn=c;
-        end
+        functi
     end
     
 end

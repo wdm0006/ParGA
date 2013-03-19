@@ -66,7 +66,16 @@ classdef Population < handle
                 newpop{1,j}=Member(obj.ff,obj.mi,obj.ma);
                 
                 %crossover
-                if obj.crossover_n==1
+                if obj.crossover_n==0
+                    %no crossover
+                    mod=zeros(1,length(w1));
+                    mod2=ones(1,length(w2));
+                    for k=1:round(rand(1,length(mod)))
+                        mod(k)=1;
+                        mod2(k)=0;
+                    end
+                    weights=(abs(mod).*w1)+(mod2.*w2);
+                elseif obj.crossover_n==1
                     %single crossover
                     mod=zeros(1,length(w1));
                     mod2=ones(1,length(w2));
