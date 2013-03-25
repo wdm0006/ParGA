@@ -1,4 +1,4 @@
-classdef Globe < handle
+classdef GAGlobe < handle
     properties (SetAccess = private)
         numGenerations
         nations
@@ -13,7 +13,7 @@ classdef Globe < handle
     end
     
     methods
-        function obj=Globe(fit,np,numGens,ps,mins,maxes,k,r,n)
+        function obj=GAGlobe(fit,np,numGens,ps,mins,maxes,k,r,n)
             %constructor
             obj.numGenerations=numGens;
             obj.pop_size=ps;

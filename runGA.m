@@ -57,7 +57,7 @@ crossover=0;
 %NOTE: population size should be divisible by number of populations, or
 %else the merge of populations will fail.
 
-gen_sample1=Globe(@sample_fn,4,1000,64,mins,maxes,kurt,rate,crossover);
+gen_sample1=GAGlobe(@sample_fn,4,1000,64,mins,maxes,kurt,rate,crossover);
 
 %% Initial Evolution
 % evolves one epoch in each of the still segregated populations
