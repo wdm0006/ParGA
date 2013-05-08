@@ -66,8 +66,8 @@ classdef Population < handle
                             index=ceil(rand*length(weights));
                             weights(index)=weights(index)*(((randn-1)/obj.kurt)+1);
                             newpop{1,curr_entry_counter}.setWeights(weights);
-                            curr_entry_counter=curr_entry_counter+1;
                         end
+                        curr_entry_counter=curr_entry_counter+1;
                         count=count+1;
                     end
                 end
