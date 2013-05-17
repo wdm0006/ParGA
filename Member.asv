@@ -21,12 +21,14 @@ classdef Member < handle
         function out=bi2real(obj,left,right)
             leftpart=0;
             rightpart=0;
+            rmax=0;
             for j=length(left):-1:1
                 leftpart=leftpart+(left(j)*2^(j-1));
                 rightpart=rightpart+(right(j)*2^(j-1));
+                rmax=rmax+2^(j-1);
             end
             
-            rightpart=rightpart*10^-10;
+            rightpart=rightpart/rmax;
             out=leftpart+rightpart;
         end
         
@@ -116,14 +118,7 @@ classdef Member < handle
             else
                obj.gene=in;
                realgene=obj.real_conv(obj.gene);
-               for j=1:length(realgene)
-                    if realgene(j)>obj.maxes(j)
-                        realgene(j)=obj.maxes(j);
-                    elseif realgene(j)<obj.mins(j)
-                        realgene(j)=obj.mins(j);
-                    end
-               end
-               obj.gene=real2bi(realgene);
+               
             end
             w=obj.gene;
         end

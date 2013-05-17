@@ -30,9 +30,7 @@ classdef Population < handle
             end
         end
         function obj=binarize(obj)
-           for j=1:ps
-               obj.pop{1,j}.binarize();
-           end
+           for j=1:p 
         end
         
         function obj=setPrintingOff(obj)

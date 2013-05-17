@@ -32,6 +32,12 @@ classdef GAGlobe < handle
             end
         end
         
+        function obj=binarize(obj)
+           for j=1:numPops
+               obj.nations{1,j}.binarize();
+           end
+        end
+        
         function obj=setPrintingOff(obj)
             obj.printing=0;
             for j=1:obj.numPops

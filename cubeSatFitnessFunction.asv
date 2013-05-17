@@ -1,0 +1,183 @@
+function out=cubeSatFitnessFunction(gene)
+% Gene:
+% boom_length, tip_mass, wheelr, kq1, kq2, kq3, kw1, kw2, kw3, reac_wheel_speed, max_sys_wattage
+%     (1)         (2)      (3)   (4)  (5)  (6)  (7)  (8)  (9)     (10****)         (11*****)
+
+ic=SpinCalc('EA321toQ',[45,45,45],0.0001,0);
+ic_w=[0,0,0];
+ts=0.001;
+tf=1000;
+sensor_unc=.0001;
+reac_max_speed=900;
+max_power=2;
+
+m1=gene(2);  %tip mass
+r1=0.01; %tip cylinder radius
+h1=0.03; %tip cylinder length
+m2=gene(1)*(0.05); %tether mass (ASSUMING 50G PER METER)
+l2=gene(1); %tether length
+m3=3.5; %cubesat mass
+d3=0.30; %cubesat height
+w3=0.10; %cubesat side
+cm_offset=(gene(2)/m3)*gene(1)/2;  %assumes uniform density on boom.
+
+Itip=[(1/12)*m1*(3*r1^2+h1^2),0,0;
+    0,.5*m1*r1^2,0;
+    0,0,(1/12)*m1*(3*r1^2+h1^2)];
+
+Itether=[(1/12)*m2*l2^2,0,0;
+    0,(1/12)*m2*l2^2,0;
+    0,0,0];
+
+Icube=[(1/12)*m3*(d3^2+w3^2),0,0;
+    0,(1/12)*m3*(d3^2+w3^2),0;
+    0,0,(1/12)*m3*(w3^2+w3^2)];
+
+%for now making the assumption that deployed ggb does not move the center
+%of mass.  will need to change once this is modeled.
+Itip=Itip+m1*(l2+r1+d3/2-cm_offset);
+Itether=Itether+m2*(l2/2+d3/2-cm_offset);
+Icube=Icube+m3*(cm_offset);
+I=Icube+Itip+Itether;
+
+m_w=2.4*gene(3); %assumes 2.4 kg/m (radius)
+I_w=(m_w*gene(3)^2)/2;
+
+
+%Other stuff
+%orbiting angular velocity
+%used for gravity gradient torques
+Rc=6378*10^3+600*10^3;
+Me=5.7942*10^24;
+mu=398600.4418;
+g=6.673*10^-11;
+bigO=(g*Me/(Rc^3))^(.5);
+velocity=bigO*Rc;  %orbital angular velocity*orbital radius
+rho=5.2e-13;  %BStimate from wolfram alpha at 500km
+
+CM=[0;0;cm_offset];
+Ome=sqrt(mu/Rc^3);
+
+
+
+q1=ic(1);
+q2=ic(2);
+q3=ic(3);
+q4=ic(4);
+w1=ic_w(1);
+w2=ic_w(2);
+w3=ic_w(3)+Ome;
+rs1=0;
+rs2=0;
+rs3=0;
+t=0;
+
+kqe1=gene(4);
+kqe2=gene(5);
+kqe3=gene(6);
+kw1=gene(7);
+kw2=gene(8);
+kw3=gene(9);
+
+qd=[0,0,0,1];
+
+for j=0:ts:tf
+    %for quaternions
+    E=[q1(end)^2-q2(end)^2-q3(end)^2+q4(end)^2, 2*(q1(end)*q2(end)+q3(end)*q4(end)), 2*(q1(end)*q3(end)-q2(end)*q4(end));
+        2*(q1(end)*q2(end)-q3(end)*q4(end)), -q1(end)^2+q2(end)^2-q3(end)^2+q4(end)^2, 2*(q2(end)*q3(end)+q1(end)*q4(end));
+        2*(q1(end)*q3(end)+q2(end)*q4(end)), 2*(q2(end)*q3(end)-q1(end)*q4(end)), -q1(end)^2-q2(end)^2+q3(end)^2+q4(end)^2;];
+ 
+
+    
+    qm=((rand(4,1).*sensor_unc.*2)-sensor_unc)+[q1(end);q2(end);q3(end);q4(end)];
+    qe=[qd(4),qd(3),-qd(2),-qd(1);
+        -qd(3),qd(4),qd(1),-qd(2);
+        qd(2),-qd(1),qd(4),-qd(3);
+        qd(1),qd(2),qd(3),qd(4);]*qm;
+    
+    T_in(1,1)=-(kqe1*qe(1)+kw1*w1(end));
+    T_in(2,1)=-(kqe2*qe(2)+kw2*w2(end));
+    T_in(3,1)=-(kqe3*qe(3)+kw3*w3(end));
+    
+    %torque saturation
+    T_in(T_in>.0021)=0.0021;
+    
+    %speed saturation
+    if rs1(end)>reac_max_speed
+        T_in(1,1)=0;
+    end
+    
+    if rs2(end)>reac_max_speed
+        T_in(2,1)=0;
+    end
+    
+    if rs3(end)>reac_max_speed
+        T_in(3,1)=0;
+    end
+    
+    alphax=(T_in(1)/-I_w)+rs2(end)*w3(end)-rs3(end)*w2(end);
+    alphay=(T_in(2)/-I_w)+rs3(end)*w1(end)-rs1(end)*w3(end);
+    alphaz=(T_in(3)/-I_w)+rs1(end)*w2(end)-rs2(end)*w1(end);
+    
+    %accel saturation
+    xpow=I_w*abs(rs1(end))*abs(alphax);
+    ypow=I_w*abs(rs2(end))*abs(alphay);
+    zpow=I_w*abs(rs3(end))*abs(alphaz);
+    
+    if xpow>max_power
+        alphax=(sign(alphax)*max_power)/(I_w*abs(rs1(end)));
+        T_in(1)=(alphax-rs2(end)*w3(end)+rs3(end)*w2(end))*(-I_w);
+    end
+    
+    if ypow>max_power
+        alphay=(sign(alphay)*max_power)/(I_w*abs(rs2(end)));
+        T_in(2)=(alphay-rs3(end)*w1(end)+rs1(end)*w3(end))*(-I_w);
+    end
+    
+    if zpow>max_power
+        alphaz=(sign(alphaz)*max_power)/(I_w*abs(rs3(end)));
+        T_in(3)=(alphaz-rs1(end)*w2(end)+rs2(end)*w1(end))*(-I_w);
+    end
+    
+    M_ggb=((3*mu)/(Rc^3)).*(cross(E*[0;0;1],I*(E*[0;0;1])));
+    
+    cd=2.0;
+    [af,CP]=calcAfCP_w_boom_quat(q1(end),q2(end),q3(end),q4(end),gene(1)); %assumes 2m boom
+    %magnitude of force of drag
+    Fad=.5*rho*af*cd*velocity^2;
+    M_aero=Fad*(cross(E*[1;0;0],CM-CP));
+    
+    M=M_ggb+T_in+M_aero;
+    
+    omega=[w1(end);w2(end);w3(end)];
+    qdots=.5.*(q4(end)*omega-cross(omega,[q1(end);q2(end);q3(end)]));
+    q4dot=-.5*omega'*[q1(end);q2(end);q3(end)];
+    omegadot=I\(M-cross(omega,I*omega));
+    
+    
+    out(1) = omegadot(1); %omegadot(1);                   %w1
+    out(2) = omegadot(2); %omegadot(2);                   %w2
+    out(3) = omegadot(3); %omegadot(3);                   %w3
+    out(4) = qdots(1);                                                          %e1
+    out(5) = qdots(2);                                                          %e2
+    out(6) = qdots(3);                                                            %e3
+    out(7) = q4dot;                                                            %e4
+    out(8) = alphax;
+    out(9) = alphay;
+    out(10)= alphaz;
+    
+    out = out';
+    
+end
+
+
+
+
+
+
+
+
+
+
+
+
