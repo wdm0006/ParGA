@@ -1,0 +1,75 @@
+# Pre-commit hooks for ParGA
+# Install with: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # Rust formatting
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: fmt
+        name: rustfmt
+        description: Format Rust code
+        args: ["--edition", "2021"]
+
+      - id: clippy
+        name: clippy
+        description: Lint Rust code
+        args: ["--all-targets", "--all-features", "--", "-D", "warnings"]
+
+  # Python - Ruff (linting + formatting)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        name: ruff lint
+        description: Lint Python code with ruff
+        args: ["--fix"]
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: ruff format
+        description: Format Python code with ruff
+        types_or: [python, pyi]
+
+  # General file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        name: trim trailing whitespace
+        exclude: ^legacy/
+
+      - id: end-of-file-fixer
+        name: fix end of files
+        exclude: ^legacy/
+
+      - id: check-yaml
+        name: check yaml syntax
+
+      - id: check-toml
+        name: check toml syntax
+
+      - id: check-added-large-files
+        name: check for large files
+        args: ["--maxkb=1000"]
+        exclude: ^legacy/
+
+      - id: check-merge-conflict
+        name: check for merge conflicts
+
+      - id: detect-private-key
+        name: detect private keys
+
+  # Cargo.toml formatting
+  - repo: https://github.com/DevinR528/cargo-sort
+    rev: v1.0.9
+    hooks:
+      - id: cargo-sort
+        name: cargo sort
+        description: Sort Cargo.toml dependencies
+
+# Configuration
+ci:
+  autofix_commit_msg: "style: auto-fix from pre-commit hooks"
+  autoupdate_commit_msg: "chore: update pre-commit hooks"

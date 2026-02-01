@@ -1,0 +1,66 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "parga"
+version = "0.1.0"
+description = "High-performance parallel genetic algorithm library"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["genetic-algorithm", "optimization", "evolutionary", "parallel"]
+dependencies = [
+    "numpy>=1.20",
+    "cloudpickle>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-benchmark>=4.0",
+    "hypothesis>=6.0",
+    "mypy>=1.0",
+    "ruff>=0.8",
+    "pre-commit>=3.0",
+    "maturin>=1.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/wdm0006/ParGA"
+Documentation = "https://github.com/wdm0006/ParGA#readme"
+Repository = "https://github.com/wdm0006/ParGA"
+Issues = "https://github.com/wdm0006/ParGA/issues"
+
+[tool.maturin]
+features = ["python"]
+python-source = "python"
+module-name = "parga._parga"
+strip = true
+
+# Ruff config is in ruff.toml
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+addopts = "-v --tb=short"
