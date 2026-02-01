@@ -51,6 +51,9 @@ from parga._parga import (
 from parga.ga import GA, GAResult, maximize, minimize
 from parga.parallel import ParallelGA, ParallelGAResult, ParallelIslandModel
 
+# Visualization module (requires matplotlib)
+from parga import viz
+
 __version__ = "0.1.0"
 __all__ = [
     "GA",
@@ -74,4 +77,5 @@ __all__ = [
     "rosenbrock",
     "schwefel",
     "sphere",
+    "viz",
 ]
