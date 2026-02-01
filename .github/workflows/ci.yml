@@ -78,8 +78,12 @@ jobs:
       - name: Install dependencies
         run: pip install maturin pytest numpy cloudpickle
 
-      - name: Build and install
-        run: maturin develop
+      - name: Build wheel
+        run: maturin build --release
+
+      - name: Install wheel
+        run: pip install target/wheels/*.whl
+        shell: bash
 
       - name: Run Python tests
         run: pytest python/tests/test_parga.py -v
@@ -118,10 +122,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust 1.75
+      - name: Install Rust 1.80
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.75"
+          toolchain: "1.80"
 
       - name: Build with MSRV
         run: cargo build

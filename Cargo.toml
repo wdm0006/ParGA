@@ -9,7 +9,7 @@ repository = "https://github.com/wdm0006/ParGA"
 keywords = ["genetic-algorithm", "optimization", "evolutionary", "parallel", "island-model"]
 categories = ["algorithms", "science", "simulation"]
 readme = "README.md"
-rust-version = "1.75"
+rust-version = "1.80"
 
 [lib]
 name = "parga"
