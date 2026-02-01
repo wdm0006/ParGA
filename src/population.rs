@@ -405,6 +405,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn test_population_best() {
         let mut pop: Population<RealGenome> = Population::new();
         pop.push(Individual::with_fitness(RealGenome::new(vec![1.0]), 10.0));
@@ -416,6 +417,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn test_population_statistics() {
         let mut pop: Population<RealGenome> = Population::new();
         pop.push(Individual::with_fitness(RealGenome::new(vec![1.0]), 10.0));

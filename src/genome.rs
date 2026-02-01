@@ -387,6 +387,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn test_real_genome() {
         let genome = RealGenome::new(vec![1.0, 2.0, 3.0]);
         assert_eq!(genome.len(), 3);

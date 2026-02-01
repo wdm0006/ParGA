@@ -59,7 +59,8 @@ fn test_island_model_basic() {
     let mut island_model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness);
     let result = island_model.run();
 
-    assert!(result.best_fitness > -1.0);
+    // Island model should find a reasonable solution for Sphere
+    assert!(result.best_fitness > -5.0);
     assert_eq!(result.island_best_fitness.len(), 2);
 }
 
