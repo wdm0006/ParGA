@@ -6,25 +6,33 @@ solid rocket motor to achieve a desired thrust profile.
 Background:
     Solid rocket motors burn propellant from the inside out. The shape of the
     internal cavity (grain geometry) determines how the burn area changes over
-    time, which directly affects the thrust profile.
+    time, which directly controls the thrust profile.
 
-    Common grain geometries include:
-    - Cylindrical bore (neutral burn - constant thrust)
-    - Star pattern (progressive then regressive)
-    - Finocyl (fin + cylinder - can achieve various profiles)
-
-This simplified model optimizes a parameterized star grain cross-section to match
-a target thrust curve, similar to real aerospace engineering problems.
+    This model uses a **segmented star grain**: the motor is divided into N
+    axial segments, each with its own bore radius and star-slot depth. Because
+    wider-bore segments burn through to the case sooner than narrow-bore ones,
+    the total burn area -- and thus thrust -- changes over time in ways that
+    can be shaped by the optimizer.
 
 Physics Model:
-    - Thrust F = P_c * A_t * C_F (chamber pressure * throat area * thrust coeff)
-    - Burn rate r = a * P_c^n (Saint-Venant-Wantzel equation)
-    - Chamber pressure depends on burn surface area
+    - Burn surface regresses uniformly at rate r = a * P_c^n
+    - Chamber pressure from mass-flow equilibrium:
+        P_c = (rho * a * A_b * c* / A_t)^(1/(1-n))
+    - Thrust: F = C_F * P_c * A_t
+    - Star perimeter per segment:
+        arcs between slots + radial slot walls + slot bottom arcs
+
+    Gene encoding (16 genes, all in [0, 1]):
+        genes[0:6]   bore radius per segment  (mapped to 10--50 mm)
+        genes[6:12]  slot depth per segment    (mapped to 0--25 mm)
+        genes[12]    number of star slots      (mapped to 3--12, integer)
+        genes[13]    slot angular width        (mapped to 0.05--0.40 rad)
+        genes[14]    nozzle throat diameter    (mapped to 12--25 mm)
+        genes[15]    burn rate coefficient     (mapped to 1.5e-5--6e-5, propellant choice)
 
 References:
     - Sutton, G.P. "Rocket Propulsion Elements"
     - NASA Technical Reports on SRM optimization
-    - openMotor: https://github.com/reilleya/openMotor
 """
 
 from __future__ import annotations
@@ -36,7 +44,6 @@ import numpy as np
 
 from parga import minimize
 
-# Try to import visualization - optional dependency
 try:
     from parga.viz import plot_convergence_comparison, plot_thrust_profile
 
@@ -45,320 +52,346 @@ except ImportError:
     HAS_VIZ = False
 
 
-class SimplifiedSRM:
-    """Simplified Solid Rocket Motor model.
+# ---------------------------------------------------------------------------
+# Motor model
+# ---------------------------------------------------------------------------
 
-    This model uses a parameterized star grain geometry and simulates
-    the burn progression to compute thrust over time.
+class SegmentedSRM:
+    """Segmented solid rocket motor with axially varying star grain.
+
+    The motor casing is divided into ``n_seg`` axial slices.  Each slice
+    has its own initial bore radius and star-slot depth, while the number
+    of star slots and their angular width are shared across all segments.
+
+    Burn regression is uniform (all surfaces recede at the same rate),
+    but segments with wider initial bores reach the case wall sooner,
+    causing discrete drops in total burn area and therefore in thrust.
     """
 
     def __init__(
         self,
-        outer_radius: float = 0.075,  # Motor case radius (m)
-        length: float = 0.25,  # Grain length (m)
-        throat_area: float = 0.0004,  # Nozzle throat area (m^2)
-        burn_rate_coeff: float = 3e-5,  # Burn rate coefficient (m/s/Pa^n)
-        burn_rate_exp: float = 0.35,  # Burn rate pressure exponent
+        n_seg: int = 6,
+        case_radius: float = 0.075,       # m  (75 mm)
+        total_length: float = 0.30,        # m  (300 mm)
+        burn_rate_coeff: float = 3e-5,     # m/s / Pa^n
+        burn_rate_exp: float = 0.35,
         propellant_density: float = 1750,  # kg/m^3
-        characteristic_velocity: float = 1550,  # m/s
-        thrust_coefficient: float = 1.3,  # Dimensionless
+        c_star: float = 1550,              # m/s  (characteristic velocity)
+        C_F: float = 1.3,                  # thrust coefficient
     ):
-        self.R_outer = outer_radius
-        self.L = length
-        self.A_t = throat_area
+        self.n_seg = n_seg
+        self.R_case = case_radius
+        self.L_seg = total_length / n_seg
         self.a = burn_rate_coeff
         self.n = burn_rate_exp
         self.rho = propellant_density
-        self.c_star = characteristic_velocity
-        self.C_F = thrust_coefficient
+        self.c_star = c_star
+        self.C_F = C_F
 
-    def compute_star_geometry(
-        self,
-        core_radius: float,
-        num_points: int,
-        point_depth: float,
-        point_width: float,
-    ) -> tuple[float, float]:
-        """Compute burn area and port area for star grain.
+    # -- geometry helpers (vectorised over segments) -------------------------
 
-        Args:
-            core_radius: Inner radius of the core (m)
-            num_points: Number of star points
-            point_depth: Depth of star points (m)
-            point_width: Angular width of points (radians)
+    @staticmethod
+    def star_perimeters(
+        bore_r: np.ndarray,
+        n_slots: int,
+        slot_depth: np.ndarray,
+        slot_width: float,
+    ) -> np.ndarray:
+        """Inner perimeter of each segment's star-grain cross-section.
 
-        Returns:
-            Tuple of (burn_perimeter, port_area)
+        The cross-section is a circle of radius *bore_r* with *n_slots*
+        radial rectangular slots of depth *slot_depth* and angular width
+        *slot_width*.  The perimeter consists of:
+
+        1. Circular arcs at bore radius between the slots.
+        2. Two radial walls per slot (length = slot_depth).
+        3. Circumferential arcs at the slot-bottom radius.
         """
-        if num_points < 3:
-            num_points = 3
+        has_slots = slot_depth > 0
+        circular = 2 * np.pi * bore_r
 
-        # Simplified star geometry calculation
-        # Each point adds perimeter and modifies area
+        gap_angle = np.maximum(0.0, 2 * np.pi / max(n_slots, 1) - slot_width)
+        arc_between = bore_r * gap_angle * n_slots
+        walls = n_slots * 2 * slot_depth
+        bottoms = (bore_r + slot_depth) * slot_width * n_slots
 
-        # Base circle perimeter and area
-        base_perimeter = 2 * np.pi * core_radius
-        base_area = np.pi * core_radius**2
+        return np.where(has_slots, arc_between + walls + bottoms, circular)
 
-        # Star point contribution (simplified triangular points)
-        point_perimeter = 2 * point_depth / np.cos(point_width / 2)
-        point_area = 0.5 * point_depth * 2 * point_depth * np.tan(point_width / 2)
+    # -- simulation ----------------------------------------------------------
 
-        total_perimeter = base_perimeter + num_points * point_perimeter
-        total_area = base_area + num_points * point_area
-
-        return total_perimeter, total_area
-
-    def simulate_burn(
+    def simulate(
         self,
-        core_radius: float,
-        num_points: int,
-        point_depth: float,
-        point_width: float,
+        bore_radii: np.ndarray,
+        slot_depths: np.ndarray,
+        n_slots: int,
+        slot_width: float,
+        throat_area: float,
+        burn_rate_a: float | None = None,
         dt: float = 0.01,
-        max_time: float = 5.0,
+        max_time: float = 8.0,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Simulate motor burn and return thrust profile.
+        """Simulate the motor burn and return (times, thrusts).
 
-        Args:
-            core_radius: Initial core radius
-            num_points: Number of star points
-            point_depth: Initial point depth
-            point_width: Point angular width
-            dt: Time step (s)
-            max_time: Maximum simulation time (s)
-
-        Returns:
-            Tuple of (time_array, thrust_array)
+        All segments share the same chamber pressure (well-mixed assumption).
+        Burn regression is tracked via a single scalar *web_burned* since all
+        surfaces recede at the same rate.
         """
-        times = []
-        thrusts = []
+        bore_radii = np.asarray(bore_radii, dtype=float)
+        slot_depths = np.asarray(slot_depths, dtype=float)
+        # Clamp slots so they don't exceed the case
+        slot_depths = np.minimum(slot_depths, np.maximum(0, self.R_case - bore_radii - 0.001))
 
-        t = 0
-        current_radius = core_radius
-        current_depth = point_depth
+        a = burn_rate_a if burn_rate_a is not None else self.a
 
-        while t < max_time and current_radius < self.R_outer:
-            # Get current geometry
-            perimeter, port_area = self.compute_star_geometry(
-                current_radius, int(num_points), current_depth, point_width
-            )
+        times: list[float] = []
+        thrusts: list[float] = []
 
-            # Burn surface area
-            A_b = perimeter * self.L
+        web_burned = 0.0
+        t = 0.0
 
-            # Chamber pressure from equilibrium (simplified)
-            # mdot = rho * r * A_b = P_c * A_t / c_star
-            # P_c = (rho * a * A_b * c_star / A_t)^(1/(1-n))
-            k = self.rho * self.a * A_b * self.c_star / self.A_t
-            if k > 0:
-                P_c = k ** (1 / (1 - self.n))
-            else:
-                P_c = 0
+        while t < max_time:
+            cur_r = bore_radii + web_burned
+            cur_d = np.maximum(0.0, slot_depths - web_burned)
+            active = cur_r < self.R_case
 
-            # Burn rate
-            r = self.a * (P_c**self.n) if P_c > 0 else 0
+            if not np.any(active):
+                break
 
-            # Thrust
-            F = P_c * self.A_t * self.C_F
+            perims = self.star_perimeters(cur_r, n_slots, cur_d, slot_width)
+            total_Ab = np.sum(perims[active]) * self.L_seg
+
+            if total_Ab < 1e-8:
+                break
+
+            # Equilibrium chamber pressure
+            k = self.rho * a * total_Ab * self.c_star / throat_area
+            P_c = k ** (1.0 / (1.0 - self.n))
+
+            # Burn rate & thrust
+            r_dot = a * P_c ** self.n
+            F = self.C_F * P_c * throat_area
 
             times.append(t)
             thrusts.append(F)
 
-            # Update geometry (simplified - uniform regression)
-            current_radius += r * dt
-            current_depth = max(0, current_depth - r * dt * 0.5)  # Points erode
-
+            web_burned += r_dot * dt
             t += dt
 
-            # Safety check
-            if len(times) > 10000:
+            if len(times) > 50_000:
                 break
 
+        if not times:
+            return np.zeros(1), np.zeros(1)
         return np.array(times), np.array(thrusts)
 
 
+# ---------------------------------------------------------------------------
+# Target thrust curves
+# ---------------------------------------------------------------------------
+
 def create_target_thrust_curve(
-    profile: str = "boost_sustain",
-    duration: float = 3.0,
-    peak_thrust: float = 5000,
+    profile: str = "neutral",
+    duration: float = 4.0,
     dt: float = 0.01,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Create a target thrust curve to match.
+    """Generate a target thrust curve within the motor's achievable envelope.
 
-    Args:
-        profile: Type of thrust profile
-        duration: Total burn duration (s)
-        peak_thrust: Maximum thrust (N)
-        dt: Time step (s)
-
-    Returns:
-        Tuple of (time_array, thrust_array)
+    Thrust levels are calibrated to the 75 mm case / 300 mm length motor.
+    A cylindrical bore at ~4 s burn time produces ~2500–3500 N average,
+    so targets are set in the 1500–5000 N range.
     """
     t = np.arange(0, duration, dt)
 
-    if profile == "boost_sustain":
-        # High initial thrust, then sustain
-        thrust = np.where(t < 0.5, peak_thrust, peak_thrust * 0.4)
+    if profile == "neutral":
+        thrust = np.full_like(t, 3000.0)
+    elif profile == "boost_sustain":
+        # High initial thrust decaying smoothly — achievable via
+        # differential segment bore radii causing early burnout.
+        thrust = 2000.0 + 2500.0 * np.exp(-1.0 * t)
     elif profile == "progressive":
-        # Gradually increasing thrust
-        thrust = peak_thrust * (t / duration) ** 0.5
+        thrust = 1500 + 2500 * (t / duration) ** 0.7
     elif profile == "regressive":
-        # Gradually decreasing thrust
-        thrust = peak_thrust * (1 - 0.7 * t / duration)
-    elif profile == "neutral":
-        # Constant thrust
-        thrust = np.ones_like(t) * peak_thrust * 0.6
+        thrust = 5000 * np.exp(-0.5 * t)
     else:
-        thrust = np.ones_like(t) * peak_thrust * 0.5
+        thrust = np.full_like(t, 3000.0)
 
     return t, thrust
 
 
-def thrust_curve_fitness(genes: np.ndarray, target_t: np.ndarray, target_thrust: np.ndarray) -> float:
-    """Fitness function comparing simulated vs target thrust curve.
+# ---------------------------------------------------------------------------
+# Gene decoding + fitness
+# ---------------------------------------------------------------------------
 
-    Args:
-        genes: [core_radius, num_points, point_depth, point_width]
-        target_t: Target time array
-        target_thrust: Target thrust array
+N_SEG = 6
 
-    Returns:
-        Negative RMS error (higher is better for GA)
+# Gene ranges
+BORE_MIN, BORE_MAX = 0.010, 0.050   # m
+SLOT_MIN, SLOT_MAX = 0.000, 0.025   # m
+NSLOTS_MIN, NSLOTS_MAX = 3, 12
+WIDTH_MIN, WIDTH_MAX = 0.05, 0.40   # rad
+THROAT_D_MIN, THROAT_D_MAX = 0.012, 0.025  # m
+BURN_A_MIN, BURN_A_MAX = 1.5e-5, 6.0e-5   # m/s / Pa^n  (propellant choice)
+
+
+def decode_genes(genes: np.ndarray) -> dict:
+    """Map [0, 1] genes to physical motor parameters."""
+    bore_radii = BORE_MIN + genes[0:N_SEG] * (BORE_MAX - BORE_MIN)
+    slot_depths = SLOT_MIN + genes[N_SEG:2*N_SEG] * (SLOT_MAX - SLOT_MIN)
+    n_slots = NSLOTS_MIN + int(genes[2*N_SEG] * (NSLOTS_MAX - NSLOTS_MIN))
+    slot_width = WIDTH_MIN + genes[2*N_SEG + 1] * (WIDTH_MAX - WIDTH_MIN)
+    throat_d = THROAT_D_MIN + genes[2*N_SEG + 2] * (THROAT_D_MAX - THROAT_D_MIN)
+    throat_area = np.pi * (throat_d / 2) ** 2
+    burn_rate_a = BURN_A_MIN + genes[2*N_SEG + 3] * (BURN_A_MAX - BURN_A_MIN)
+    return dict(
+        bore_radii=bore_radii,
+        slot_depths=slot_depths,
+        n_slots=int(n_slots),
+        slot_width=float(slot_width),
+        throat_area=float(throat_area),
+        throat_d=float(throat_d),
+        burn_rate_a=float(burn_rate_a),
+    )
+
+
+def thrust_curve_fitness(
+    genes: np.ndarray,
+    target_t: np.ndarray,
+    target_thrust: np.ndarray,
+    motor: SegmentedSRM,
+) -> float:
+    """RMS error between simulated and target thrust, normalised.
+
+    The simulation is capped at the target duration so the optimizer
+    only sees thrust within the desired window.
     """
-    # Decode genes to motor parameters (scaled for smaller motor)
-    core_radius = 0.008 + genes[0] * 0.032  # 0.008 to 0.04 m (8-40 mm)
-    num_points = 3 + int(genes[1] * 7)  # 3 to 10 points
-    point_depth = 0.003 + genes[2] * 0.017  # 0.003 to 0.02 m (3-20 mm)
-    point_width = 0.1 + genes[3] * 0.4  # 0.1 to 0.5 radians (~6-29 degrees)
-
-    # Create motor and simulate
-    motor = SimplifiedSRM()
+    params = decode_genes(genes)
 
     try:
-        sim_t, sim_thrust = motor.simulate_burn(
-            core_radius=core_radius,
-            num_points=num_points,
-            point_depth=point_depth,
-            point_width=point_width,
-            dt=0.02,
-            max_time=target_t[-1] + 0.5,
+        sim_t, sim_thrust = motor.simulate(
+            params["bore_radii"],
+            params["slot_depths"],
+            params["n_slots"],
+            params["slot_width"],
+            params["throat_area"],
+            burn_rate_a=params["burn_rate_a"],
+            max_time=target_t[-1] + 0.01,
         )
-    except (ValueError, ZeroDivisionError, FloatingPointError):
-        return -1e6  # Invalid configuration
+    except (ValueError, ZeroDivisionError, FloatingPointError, OverflowError):
+        return 1e6
 
     if len(sim_t) < 10:
-        return -1e6  # Burn too short
+        return 1e6
 
-    # Interpolate simulated thrust to target time points
-    sim_thrust_interp = np.interp(target_t, sim_t, sim_thrust, left=0, right=0)
+    # Interpolate onto target grid; zero thrust after burnout
+    sim_interp = np.interp(target_t, sim_t, sim_thrust, left=0, right=0)
 
-    # Compute RMS error
-    rms_error = np.sqrt(np.mean((sim_thrust_interp - target_thrust) ** 2))
+    # RMS error normalised by mean target thrust
+    rms = np.sqrt(np.mean((sim_interp - target_thrust) ** 2))
+    norm = np.mean(np.abs(target_thrust)) + 1.0
+    return rms / norm
 
-    # Normalize by target thrust magnitude
-    rms_normalized = rms_error / (np.mean(target_thrust) + 1)
 
-    return -rms_normalized  # Negative because we maximize fitness
-
+# ---------------------------------------------------------------------------
+# Optimisation wrapper
+# ---------------------------------------------------------------------------
 
 def optimize_motor(
-    target_profile: str = "boost_sustain",
-    population_size: int = 100,
-    generations: int = 200,
-    islands: int = 1,
+    target_profile: str = "neutral",
+    population_size: int = 200,
+    generations: int = 500,
+    islands: int = 4,
     seed: int | None = None,
     verbose: bool = True,
 ) -> dict:
-    """Optimize motor grain geometry for target thrust profile.
-
-    Args:
-        target_profile: Target thrust profile type
-        population_size: GA population size
-        generations: Number of generations
-        islands: Number of islands
-        seed: Random seed
-        verbose: Print progress
-
-    Returns:
-        Dictionary with optimization results
-    """
-    # Create target curve
-    target_t, target_thrust = create_target_thrust_curve(
-        profile=target_profile, duration=3.0, peak_thrust=5000
-    )
+    """Optimise the segmented grain to match a target thrust profile."""
+    motor = SegmentedSRM(n_seg=N_SEG)
+    target_t, target_thrust = create_target_thrust_curve(target_profile, duration=4.0)
 
     def fitness(genes):
-        return -thrust_curve_fitness(genes, target_t, target_thrust)
+        return thrust_curve_fitness(genes, target_t, target_thrust, motor)
+
+    n_genes = 2 * N_SEG + 4  # bore + slot per segment + n_slots + width + throat + burn_rate
 
     if verbose:
-        print(f"\nOptimizing motor for '{target_profile}' thrust profile")
-        print(f"  Target duration: {target_t[-1]:.1f}s")
-        print(f"  Peak thrust: {np.max(target_thrust):.0f}N")
+        print(f"\nOptimising for '{target_profile}' profile ({n_genes} genes, {N_SEG} segments)")
+        print(f"  Target duration: {target_t[-1]:.1f} s")
+        print(f"  Target peak thrust: {np.max(target_thrust):.0f} N")
 
-    start_time = time.perf_counter()
+    t0 = time.perf_counter()
 
     result = minimize(
         fitness,
-        genome_length=4,
+        genome_length=n_genes,
         bounds=(0.0, 1.0),
         population_size=population_size,
         generations=generations,
         islands=islands,
-        mutation_rate=0.05,
+        mutation_rate=0.08,
         crossover_rate=0.8,
         seed=seed,
+        parallel=False,   # Rust strategy: SRM sim is ~30ms, too fast for multiprocess overhead
         verbose=False,
     )
 
-    elapsed = time.perf_counter() - start_time
+    elapsed = time.perf_counter() - t0
+    params = decode_genes(result.best_genes())
+    sim_kwargs = dict(
+        bore_radii=params["bore_radii"], slot_depths=params["slot_depths"],
+        n_slots=params["n_slots"], slot_width=params["slot_width"],
+        throat_area=params["throat_area"], burn_rate_a=params["burn_rate_a"],
+    )
 
-    # Decode best solution (matching the gene decoding in fitness function)
-    genes = result.best_genes()
-    best_params = {
-        "core_radius": 0.008 + genes[0] * 0.032,
-        "num_points": 3 + int(genes[1] * 7),
-        "point_depth": 0.003 + genes[2] * 0.017,
-        "point_width": 0.1 + genes[3] * 0.4,
-    }
+    # Full simulation for true burn time reporting
+    sim_t_full, sim_thrust_full = motor.simulate(**sim_kwargs)
+    # Capped simulation for plotting (matches the target window)
+    target_duration = target_t[-1]
+    sim_t, sim_thrust = motor.simulate(**sim_kwargs, max_time=target_duration + 0.01)
 
-    # Get final thrust curve
-    motor = SimplifiedSRM()
-    sim_t, sim_thrust = motor.simulate_burn(**best_params, dt=0.02, max_time=4.0)
+    # RMS error on the target window
+    sim_interp = np.interp(target_t, sim_t, sim_thrust, left=0, right=0)
+    rms = np.sqrt(np.mean((sim_interp - target_thrust) ** 2))
 
     if verbose:
         print(f"  Strategy: {result.strategy}")
-        print(f"  Time: {elapsed:.2f}s")
-        print(f"\n  Optimized parameters:")
-        print(f"    Core radius: {best_params['core_radius']*1000:.1f} mm")
-        print(f"    Star points: {best_params['num_points']}")
-        print(f"    Point depth: {best_params['point_depth']*1000:.1f} mm")
-        print(f"    Point width: {np.degrees(best_params['point_width']):.1f} degrees")
-        print(f"\n  Simulated performance:")
-        print(f"    Burn time: {sim_t[-1]:.2f}s")
-        print(f"    Peak thrust: {np.max(sim_thrust):.0f}N")
-        print(f"    Avg thrust: {np.mean(sim_thrust):.0f}N")
+        print(f"  Time: {elapsed:.1f} s")
+        print(f"  RMS error: {rms:.0f} N  ({rms / np.mean(target_thrust) * 100:.1f}% of mean target)")
+        print(f"  Optimised parameters:")
+        print(f"    Bore radii (mm): {', '.join(f'{r*1000:.1f}' for r in params['bore_radii'])}")
+        print(f"    Slot depths (mm): {', '.join(f'{d*1000:.1f}' for d in params['slot_depths'])}")
+        print(f"    Star slots: {params['n_slots']}")
+        print(f"    Slot width: {np.degrees(params['slot_width']):.1f}°")
+        print(f"    Throat diameter: {params['throat_d']*1000:.1f} mm")
+        print(f"    Burn rate coeff: {params['burn_rate_a']*1e5:.2f} × 10⁻⁵ m/s/Pa^n")
+        print(f"  Simulated performance:")
+        print(f"    Burn time: {sim_t_full[-1]:.2f} s")
+        print(f"    Peak thrust: {np.max(sim_thrust_full):.0f} N")
+        print(f"    Avg thrust: {np.mean(sim_thrust_full):.0f} N")
 
-    return {
-        "profile": target_profile,
-        "params": best_params,
-        "target_t": target_t,
-        "target_thrust": target_thrust,
-        "sim_t": sim_t,
-        "sim_thrust": sim_thrust,
-        "fitness_history": result.fitness_history,
-        "strategy": result.strategy,
-        "elapsed": elapsed,
-    }
+    return dict(
+        profile=target_profile,
+        params=params,
+        target_t=target_t,
+        target_thrust=target_thrust,
+        sim_t=sim_t,
+        sim_thrust=sim_thrust,
+        rms_error=rms,
+        fitness_history=result.fitness_history,
+        strategy=result.strategy,
+        elapsed=elapsed,
+    )
 
+
+# ---------------------------------------------------------------------------
+# Benchmark & comparison runners
+# ---------------------------------------------------------------------------
 
 def run_benchmark(output_dir: Path | None = None):
-    """Run optimization for various thrust profiles."""
+    """Optimise for four different thrust profiles."""
     print("=" * 70)
-    print("Solid Rocket Motor Grain Optimization")
+    print("Solid Rocket Motor — Segmented Star-Grain Optimisation")
     print("=" * 70)
-    print("\nOptimizing star grain geometry to match target thrust profiles.")
-    print("This simulates aerospace engineering design optimization.")
+    print(f"\nMotor: {N_SEG}-segment star grain, 75 mm case radius, 300 mm length")
+    print(f"Genes: {2*N_SEG+4} (bore radius + slot depth per segment + globals)")
     print()
 
     if output_dir:
@@ -367,105 +400,114 @@ def run_benchmark(output_dir: Path | None = None):
 
     profiles = ["neutral", "boost_sustain", "progressive", "regressive"]
     all_histories = {}
+    results_summary = []
 
     for profile in profiles:
-        print(f"\n{'='*50}")
-        print(f"Target Profile: {profile}")
+        print(f"\n{'=' * 50}")
+        print(f"Target: {profile.replace('_', ' ').title()}")
         print("=" * 50)
 
         result = optimize_motor(
             target_profile=profile,
             population_size=100,
-            generations=150,
+            generations=250,
+            islands=4,
             seed=42,
             verbose=True,
         )
 
         all_histories[profile] = result["fitness_history"]
+        results_summary.append(
+            (profile, result["rms_error"], result["elapsed"], result["strategy"])
+        )
 
-        # Save thrust profile plot
         if HAS_VIZ and output_dir:
             plot_thrust_profile(
                 result["target_t"],
                 result["target_thrust"],
                 result["sim_t"],
                 result["sim_thrust"],
-                title=f"Motor Optimization: {profile.replace('_', ' ').title()} Profile",
+                title=f"SRM: {profile.replace('_', ' ').title()} Profile",
                 save_path=output_dir / f"srm_thrust_{profile}.png",
                 show=False,
             )
 
-    # Convergence comparison
+    # Summary table
+    print("\n" + "=" * 70)
+    print("Summary")
+    print("=" * 70)
+    print(f"{'Profile':20} {'RMS (N)':>10} {'RMS %':>8} {'Time (s)':>10} {'Strategy':>10}")
+    print("-" * 60)
+    for profile, rms, elapsed, strategy in results_summary:
+        target_t, target_thrust = create_target_thrust_curve(profile)
+        pct = rms / np.mean(target_thrust) * 100
+        print(f"{profile:20} {rms:>10.0f} {pct:>7.1f}% {elapsed:>10.1f} {strategy:>10}")
+
     if HAS_VIZ and output_dir:
         plot_convergence_comparison(
             all_histories,
-            title="SRM Optimization Convergence by Profile",
+            title="SRM Optimisation Convergence",
             ylabel="Negative RMS Error",
             save_path=output_dir / "srm_convergence_comparison.png",
             show=False,
         )
         print(f"\nPlots saved to {output_dir}/")
 
+    return results_summary
+
 
 def compare_strategies(output_dir: Path | None = None):
-    """Compare single GA vs island model for motor optimization."""
+    """Compare single GA vs island model on boost-sustain."""
     target_profile = "boost_sustain"
 
     print("=" * 70)
-    print(f"Strategy Comparison: {target_profile} Profile")
+    print(f"Strategy Comparison: {target_profile.replace('_', ' ').title()} Profile")
     print("=" * 70)
 
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Single population
     print("\n--- Single Population GA ---")
     result_single = optimize_motor(
         target_profile=target_profile,
-        population_size=150,
-        generations=300,
+        population_size=80,
+        generations=200,
         islands=1,
         seed=42,
         verbose=True,
     )
 
-    # Island model
     print("\n--- Island Model (4 islands) ---")
     result_island = optimize_motor(
         target_profile=target_profile,
-        population_size=150,
-        generations=300,
+        population_size=80,
+        generations=200,
         islands=4,
         seed=42,
         verbose=True,
     )
 
     print("\n--- Results ---")
-    print(f"Single GA:    fitness={result_single['fitness_history'][-1]:.6f} in {result_single['elapsed']:.2f}s")
-    print(f"Island Model: fitness={result_island['fitness_history'][-1]:.6f} in {result_island['elapsed']:.2f}s")
+    print(f"Single GA:    RMS = {result_single['rms_error']:.0f} N  in {result_single['elapsed']:.1f} s")
+    print(f"Island Model: RMS = {result_island['rms_error']:.0f} N  in {result_island['elapsed']:.1f} s")
 
-    # Comparison plots
     if HAS_VIZ and output_dir:
+        best = result_island if result_island["rms_error"] < result_single["rms_error"] else result_single
+        plot_thrust_profile(
+            best["target_t"], best["target_thrust"],
+            best["sim_t"], best["sim_thrust"],
+            title=f"Best SRM Design: {target_profile.replace('_', ' ').title()}",
+            save_path=output_dir / "srm_best_thrust.png",
+            show=False,
+        )
         plot_convergence_comparison(
             {
                 "Single GA": result_single["fitness_history"],
                 "Island Model (4)": result_island["fitness_history"],
             },
-            title="SRM Optimization: Single GA vs Island Model",
+            title="SRM: Single GA vs Island Model",
             save_path=output_dir / "srm_strategy_comparison.png",
-            show=False,
-        )
-
-        # Save best result thrust profile
-        best_result = result_island if result_island["fitness_history"][-1] > result_single["fitness_history"][-1] else result_single
-        plot_thrust_profile(
-            best_result["target_t"],
-            best_result["target_thrust"],
-            best_result["sim_t"],
-            best_result["sim_thrust"],
-            title="Best Motor Design: Boost-Sustain Profile",
-            save_path=output_dir / "srm_best_thrust.png",
             show=False,
         )
         print(f"\nPlots saved to {output_dir}/")
@@ -474,7 +516,6 @@ def compare_strategies(output_dir: Path | None = None):
 if __name__ == "__main__":
     import sys
 
-    # Default output directory
     output_dir = Path(__file__).parent / "output"
 
     if len(sys.argv) > 1 and sys.argv[1] == "--compare":
