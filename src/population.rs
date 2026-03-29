@@ -245,7 +245,25 @@ impl<G: Genome> Population<G> {
 
     /// Sorts the population by fitness (descending - best first).
     pub fn sort_by_fitness(&mut self) {
-        self.individuals.sort_by(|a, b| {
+        self.individuals.sort_unstable_by(|a, b| {
+            let fa = a.fitness.unwrap_or(f64::NEG_INFINITY);
+            let fb = b.fitness.unwrap_or(f64::NEG_INFINITY);
+            fb.total_cmp(&fa)
+        });
+    }
+
+    /// Partitions so that the top-k elite individuals are in the first k positions.
+    ///
+    /// Uses O(n) partial sort instead of O(n log n) full sort.
+    /// The first k elements are the best k, but not necessarily sorted among themselves.
+    /// Elements after position k are in arbitrary order.
+    pub fn partition_elite(&mut self, k: usize) {
+        if k == 0 || k >= self.individuals.len() {
+            return;
+        }
+        // select_nth_unstable_by places the k-th element in its sorted position
+        // and partitions: elements before k are >= element at k, elements after are <=
+        self.individuals.select_nth_unstable_by(k, |a, b| {
             b.fitness
                 .partial_cmp(&a.fitness)
                 .unwrap_or(std::cmp::Ordering::Equal)

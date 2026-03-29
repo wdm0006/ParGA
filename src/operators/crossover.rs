@@ -208,11 +208,15 @@ impl Crossover<RealGenome> for RealCrossover {
                     let p1 = parent1.genes()[i];
                     let p2 = parent2.genes()[i];
                     let diff = (p2 - p1).abs();
-                    let min_val = p1.min(p2) - alpha * diff;
-                    let max_val = p1.max(p2) + alpha * diff;
-
-                    child1.push(rng.gen_range(min_val..=max_val));
-                    child2.push(rng.gen_range(min_val..=max_val));
+                    if diff < f64::EPSILON || diff.is_nan() {
+                        child1.push(p1);
+                        child2.push(p1);
+                    } else {
+                        let min_val = p1.min(p2) - alpha * diff;
+                        let max_val = p1.max(p2) + alpha * diff;
+                        child1.push(rng.gen_range(min_val..=max_val));
+                        child2.push(rng.gen_range(min_val..=max_val));
+                    }
                 }
 
                 (RealGenome::new(child1), RealGenome::new(child2))

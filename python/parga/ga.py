@@ -25,11 +25,17 @@ from typing import Callable
 import numpy as np
 
 from parga._parga import (
+    CrossoverMethod,
     GeneticAlgorithm as RustGA,
 )
 from parga._parga import (
     IslandModel as RustIslandModel,
 )
+from parga._parga import (
+    MutationMethod,
+    SelectionMethod,
+)
+from parga._parga import is_free_threaded, set_num_threads
 from parga.parallel import ParallelGA, ParallelIslandModel
 
 
@@ -129,6 +135,14 @@ class GA:
         migration_count: int = 5,
         seed: int | None = None,
         verbose: bool = False,
+        crossover_method: CrossoverMethod | None = None,
+        mutation_method: MutationMethod | None = None,
+        selection_method: SelectionMethod | None = None,
+        early_stopping: int | None = None,
+        restart_on_stagnation: int | None = None,
+        local_search_iters: int | None = None,
+        mutation_rate_end: float | None = None,
+        random_immigrants: int | None = None,
     ):
         self.fitness_fn = fitness_fn
         self.genome_length = genome_length
@@ -159,6 +173,16 @@ class GA:
             self.lower_bounds = list(bounds[0])
             self.upper_bounds = list(bounds[1])
 
+        # Operator overrides
+        self.crossover_method = crossover_method
+        self.mutation_method = mutation_method
+        self.selection_method = selection_method
+        self.early_stopping = early_stopping
+        self.restart_on_stagnation = restart_on_stagnation
+        self.local_search_iters = local_search_iters
+        self.mutation_rate_end = mutation_rate_end
+        self.random_immigrants = random_immigrants
+
         # Will be set after strategy selection
         self._strategy: str | None = None
         self._fitness_time: float | None = None
@@ -182,6 +206,14 @@ class GA:
 
     def _select_strategy(self) -> str:
         """Select the optimal execution strategy."""
+        # Free-threaded Python: always use Rust (rayon handles parallelism)
+        if is_free_threaded():
+            if self.verbose:
+                print("Free-threaded Python detected — using Rust/rayon parallelism")
+            if self.islands > 1:
+                return "rust_island"
+            return "rust"
+
         # If user explicitly set parallel preference, respect it
         if self.parallel is True:
             if self.islands > 1:
@@ -224,6 +256,13 @@ class GA:
         if self.verbose:
             print(f"Selected strategy: {self._strategy}")
 
+        # On free-threaded Python, configure rayon thread pool size
+        if is_free_threaded() and self._strategy in ("rust", "rust_island"):
+            try:
+                set_num_threads(self.n_workers)
+            except ValueError:
+                pass  # Thread pool already initialized
+
         if self._strategy == "rust":
             return self._run_rust()
         elif self._strategy == "parallel":
@@ -249,7 +288,18 @@ class GA:
             lower_bounds=self.lower_bounds,
             upper_bounds=self.upper_bounds,
             seed=self.seed,
+            early_stopping=self.early_stopping,
+            restart_on_stagnation=self.restart_on_stagnation,
+            local_search_iters=self.local_search_iters,
+            mutation_rate_end=self.mutation_rate_end,
+            random_immigrants=self.random_immigrants,
         )
+        if self.crossover_method is not None:
+            ga.set_crossover(self.crossover_method)
+        if self.mutation_method is not None:
+            ga.set_mutation(self.mutation_method)
+        if self.selection_method is not None:
+            ga.set_selection(self.selection_method)
         result = ga.run()
         return GAResult(
             best_genes=np.array(result.best_genes()),
@@ -303,6 +353,12 @@ class GA:
             upper_bounds=self.upper_bounds,
             seed=self.seed,
         )
+        if self.crossover_method is not None:
+            ga.set_crossover(self.crossover_method)
+        if self.mutation_method is not None:
+            ga.set_mutation(self.mutation_method)
+        if self.selection_method is not None:
+            ga.set_selection(self.selection_method)
         result = ga.run()
         return GAResult(
             best_genes=np.array(result.best_genes()),

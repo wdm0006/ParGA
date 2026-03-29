@@ -53,6 +53,8 @@ pub mod rng;
 #[cfg(feature = "python")]
 pub mod python;
 
+use rand::Rng;
+
 pub use error::{Error, Result};
 pub use fitness::FitnessFunction;
 pub use genome::{BinaryGenome, Genome, PermutationGenome, RealGenome};
@@ -105,6 +107,33 @@ pub struct GaConfig {
     /// Random seed for reproducibility.
     #[builder(default = "None", setter(strip_option))]
     pub seed: Option<u64>,
+
+    /// Stop early if best fitness hasn't improved for this many generations.
+    /// None means no early stopping (run all generations).
+    #[builder(default = "None", setter(strip_option))]
+    pub early_stopping: Option<usize>,
+
+    /// Reinitialize non-elite population when fitness stagnates for this many
+    /// generations. Keeps the top `elitism` individuals and randomizes the rest.
+    /// None means no restart (default).
+    #[builder(default = "None", setter(strip_option))]
+    pub restart_on_stagnation: Option<usize>,
+
+    /// Number of local search iterations to apply to the best individual each
+    /// generation. Each iteration tries a small random perturbation and keeps
+    /// it if fitness improves. 0 or None means no local search (default).
+    #[builder(default = "None", setter(strip_option))]
+    pub local_search_iters: Option<usize>,
+
+    /// Final mutation rate for linear decay. If set, the mutation rate linearly
+    /// interpolates from `mutation_rate` to `mutation_rate_end` over the generations.
+    #[builder(default = "None", setter(strip_option))]
+    pub mutation_rate_end: Option<f64>,
+
+    /// Number of worst individuals to replace with random ones each generation.
+    /// Provides continuous diversity injection. None means no immigrants (default).
+    #[builder(default = "None", setter(strip_option))]
+    pub random_immigrants: Option<usize>,
 }
 
 impl GaConfig {
@@ -156,6 +185,8 @@ where
     mutation: MutationOperator<G>,
     generation: usize,
     fitness_history: Vec<f64>,
+    cached_lower: Vec<f64>,
+    cached_upper: Vec<f64>,
 }
 
 impl<G, F> GeneticAlgorithm<G, F>
@@ -176,6 +207,8 @@ where
             selection: SelectionOperator::Tournament(config.tournament_size),
             crossover: CrossoverOperator::default(),
             mutation: MutationOperator::default(),
+            cached_lower: lower,
+            cached_upper: upper,
             config,
             population,
             fitness_fn,
@@ -193,6 +226,7 @@ where
         crossover: CrossoverOperator<G>,
         mutation: MutationOperator<G>,
     ) -> Self {
+        let (lower, upper) = config.bounds();
         Self {
             config,
             population,
@@ -202,6 +236,8 @@ where
             mutation,
             generation: 0,
             fitness_history: Vec::new(),
+            cached_lower: lower,
+            cached_upper: upper,
         }
     }
 
@@ -228,8 +264,61 @@ where
         // Evaluate initial population
         self.evaluate_population();
 
-        for _ in 0..self.config.generations {
+        let early_stopping = self.config.early_stopping;
+        let restart_patience = self.config.restart_on_stagnation;
+        let mutation_rate_start = self.config.mutation_rate;
+        let mutation_rate_end = self.config.mutation_rate_end;
+        let total_gens = self.config.generations;
+        let mut stagnation_count: usize = 0;
+        let mut best_so_far = f64::NEG_INFINITY;
+
+        for gen in 0..total_gens {
+            // Adaptive mutation rate: linear interpolation
+            if let Some(end_rate) = mutation_rate_end {
+                let t = gen as f64 / total_gens.max(1) as f64;
+                self.config.mutation_rate =
+                    mutation_rate_start + t * (end_rate - mutation_rate_start);
+            }
+
             self.step();
+
+            let current_best = self
+                .fitness_history
+                .last()
+                .copied()
+                .unwrap_or(f64::NEG_INFINITY);
+
+            if current_best > best_so_far + 1e-12 {
+                best_so_far = current_best;
+                stagnation_count = 0;
+            } else {
+                stagnation_count += 1;
+            }
+
+            // Restart: reinitialize non-elite population on stagnation
+            if let Some(patience) = restart_patience {
+                if stagnation_count >= patience && stagnation_count % patience == 0 {
+                    let mut restart_rng = rand::thread_rng();
+                    let elitism = self.config.elitism;
+                    let genome_length = self.config.genome_length;
+                    let lower = &self.cached_lower;
+                    let upper = &self.cached_upper;
+                    let individuals = self.population.individuals_mut();
+                    for ind in individuals.iter_mut().skip(elitism) {
+                        *ind = Individual::new(G::random(&mut restart_rng, genome_length, lower, upper));
+                    }
+                    self.evaluate_population();
+                }
+            }
+
+            // Early stopping check (only if no restart is configured)
+            if restart_patience.is_none() {
+                if let Some(patience) = early_stopping {
+                    if stagnation_count >= patience {
+                        break;
+                    }
+                }
+            }
         }
 
         self.result()
@@ -237,7 +326,7 @@ where
 
     /// Runs a single generation step.
     pub fn step(&mut self) {
-        let mut rng = rng::create_rng(None);
+        let mut rng = rand::thread_rng();
 
         // Selection
         let parents = self.selection.select(
@@ -247,19 +336,21 @@ where
         );
 
         // Create new population with elites
-        let mut new_individuals: Vec<Individual<G>> = self
-            .population
-            .individuals()
-            .iter()
-            .take(self.config.elitism)
-            .cloned()
-            .collect();
+        let mut new_individuals: Vec<Individual<G>> = Vec::with_capacity(self.config.population_size);
+        new_individuals.extend(
+            self.population
+                .individuals()
+                .iter()
+                .take(self.config.elitism)
+                .cloned(),
+        );
 
-        // Crossover and mutation
-        let (lower, upper) = self.config.bounds();
+        // Crossover and mutation using cached bounds
+        let lower = &self.cached_lower;
+        let upper = &self.cached_upper;
         for chunk in parents.chunks(2) {
             if chunk.len() == 2 {
-                let (child1, child2) = if rand::random::<f64>() < self.config.crossover_rate {
+                let (child1, child2) = if rng.gen::<f64>() < self.config.crossover_rate {
                     self.crossover
                         .crossover(&chunk[0].genome, &chunk[1].genome, &mut rng)
                 } else {
@@ -272,15 +363,15 @@ where
                 self.mutation.mutate(
                     &mut ind1.genome,
                     self.config.mutation_rate,
-                    &lower,
-                    &upper,
+                    lower,
+                    upper,
                     &mut rng,
                 );
                 self.mutation.mutate(
                     &mut ind2.genome,
                     self.config.mutation_rate,
-                    &lower,
-                    &upper,
+                    lower,
+                    upper,
                     &mut rng,
                 );
 
@@ -293,8 +384,8 @@ where
                 self.mutation.mutate(
                     &mut ind.genome,
                     self.config.mutation_rate,
-                    &lower,
-                    &upper,
+                    lower,
+                    upper,
                     &mut rng,
                 );
                 new_individuals.push(ind);
@@ -303,30 +394,117 @@ where
 
         self.population = Population::from_individuals(new_individuals);
         self.evaluate_population();
+
+        // Random immigrants: replace worst individuals with random ones
+        if let Some(n_immigrants) = self.config.random_immigrants {
+            if n_immigrants > 0 {
+                let pop_size = self.population.len();
+                let mut imm_rng = rand::thread_rng();
+                let genome_length = self.config.genome_length;
+                let lower = &self.cached_lower;
+                let upper = &self.cached_upper;
+                let start = pop_size.saturating_sub(n_immigrants);
+                let individuals = self.population.individuals_mut();
+                for ind in individuals.iter_mut().skip(start) {
+                    *ind = Individual::new(G::random(&mut imm_rng, genome_length, lower, upper));
+                }
+                // Evaluate the new immigrants
+                let immigrant_genomes: Vec<&G> = self
+                    .population
+                    .individuals()
+                    .iter()
+                    .skip(start)
+                    .map(|ind| &ind.genome)
+                    .collect();
+                let results = self.fitness_fn.evaluate_batch(&immigrant_genomes);
+                for (i, fitness) in results.into_iter().enumerate() {
+                    self.population.individuals_mut()[start + i].fitness = Some(fitness);
+                }
+                self.population.sort_by_fitness();
+            }
+        }
+
+        // Local search on the best individual
+        if let Some(iters) = self.config.local_search_iters {
+            if iters > 0 {
+                self.local_search(iters);
+            }
+        }
+
         self.generation += 1;
+    }
+
+    /// Apply local search (hill climbing) to the best individual.
+    /// Tries small random perturbations and keeps improvements.
+    fn local_search(&mut self, iterations: usize) {
+        let best = match self.population.best() {
+            Some(b) => b.clone(),
+            None => return,
+        };
+        let best_fitness = best.fitness.unwrap_or(f64::NEG_INFINITY);
+        let mut current_genes: Vec<f64> = best.genome.as_f64_vec();
+        let mut current_fitness = best_fitness;
+
+        let mut rng = rand::thread_rng();
+        let lower = &self.cached_lower;
+        let upper = &self.cached_upper;
+        let len = current_genes.len();
+
+        for _ in 0..iterations {
+            // Perturb a random gene
+            let idx = rng.gen_range(0..len);
+            let range = upper[idx] - lower[idx];
+            let sigma = range * 0.01; // 1% of range
+            let delta: f64 = rng.gen_range(-sigma..=sigma);
+            let old_val = current_genes[idx];
+            current_genes[idx] = (old_val + delta).clamp(lower[idx], upper[idx]);
+
+            let candidate = G::from_f64_vec(current_genes.clone());
+            let fitness = self.fitness_fn.evaluate(&candidate);
+
+            if fitness > current_fitness {
+                current_fitness = fitness;
+            } else {
+                current_genes[idx] = old_val; // revert
+            }
+        }
+
+        if current_fitness > best_fitness {
+            let mut improved = Individual::new(G::from_f64_vec(current_genes));
+            improved.fitness = Some(current_fitness);
+            // Replace the best individual
+            self.population.individuals_mut()[0] = improved;
+            // Update fitness history
+            if let Some(last) = self.fitness_history.last_mut() {
+                *last = current_fitness;
+            }
+        }
     }
 
     /// Evaluates fitness for all individuals in the population.
     fn evaluate_population(&mut self) {
-        #[cfg(feature = "parallel")]
-        {
-            use rayon::prelude::*;
-            self.population
-                .individuals_mut()
-                .par_iter_mut()
-                .for_each(|ind| {
-                    if ind.fitness.is_none() {
-                        ind.fitness = Some(self.fitness_fn.evaluate(&ind.genome));
-                    }
-                });
-        }
+        // Collect indices that need evaluation
+        let unevaluated: Vec<usize> = self
+            .population
+            .individuals()
+            .iter()
+            .enumerate()
+            .filter(|(_, ind)| ind.fitness.is_none())
+            .map(|(i, _)| i)
+            .collect();
 
-        #[cfg(not(feature = "parallel"))]
-        {
-            for ind in self.population.individuals_mut() {
-                if ind.fitness.is_none() {
-                    ind.fitness = Some(self.fitness_fn.evaluate(&ind.genome));
-                }
+        if !unevaluated.is_empty() {
+            // Collect genome references for batch evaluation
+            let genomes: Vec<&G> = unevaluated
+                .iter()
+                .map(|&i| &self.population.individuals()[i].genome)
+                .collect();
+
+            let results = self.fitness_fn.evaluate_batch(&genomes);
+
+            // Assign results back
+            for (idx, fitness) in unevaluated.into_iter().zip(results) {
+                self.population.individuals_mut()[idx].fitness = Some(fitness);
             }
         }
 
@@ -408,7 +586,7 @@ use pyo3::prelude::*;
 
 /// Python module initialization.
 #[cfg(feature = "python")]
-#[pymodule]
+#[pymodule(gil_used = false)]
 fn _parga(m: &Bound<'_, PyModule>) -> PyResult<()> {
     python::register_module(m)?;
     Ok(())

@@ -7,6 +7,9 @@ use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+#[cfg(Py_GIL_DISABLED)]
+use rayon::prelude::*;
+
 use crate::fitness::FitnessFunction;
 use crate::genome::RealGenome;
 use crate::island::{IslandConfig, IslandModel, MigrationTopology};
@@ -16,6 +19,28 @@ use crate::operators::{
     selection::SelectionOperator,
 };
 use crate::{GaConfig, GaResult, GeneticAlgorithm};
+
+/// Configure the rayon global thread pool size.
+///
+/// Must be called before any parallel work is submitted. Calling after
+/// the pool has been initialized will return an error.
+#[pyfunction]
+#[pyo3(signature = (num_threads))]
+fn set_num_threads(num_threads: usize) -> PyResult<()> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build_global()
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Return whether the extension was compiled for free-threaded Python.
+///
+/// When `True`, Rust-side fitness evaluation uses rayon parallelism
+/// instead of the Python `ProcessPoolExecutor` path.
+#[pyfunction]
+fn is_free_threaded() -> bool {
+    cfg!(Py_GIL_DISABLED)
+}
 
 /// Register the Python module.
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -27,6 +52,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCrossoverMethod>()?;
     m.add_class::<PyMutationMethod>()?;
     m.add_class::<PyMigrationTopology>()?;
+
+    // Add utility functions
+    m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(is_free_threaded, m)?)?;
 
     // Add benchmark functions
     m.add_function(wrap_pyfunction!(sphere, m)?)?;
@@ -63,6 +92,40 @@ impl FitnessFunction<RealGenome> for PyFitness {
                 Err(_) => f64::NEG_INFINITY,
             }
         })
+    }
+
+    fn evaluate_batch(&self, genomes: &[&RealGenome]) -> Vec<f64> {
+        // Free-threaded Python (3.13t+): no GIL, so rayon par_iter can call
+        // Python callbacks from multiple threads simultaneously.
+        #[cfg(Py_GIL_DISABLED)]
+        {
+            genomes
+                .par_iter()
+                .map(|genome| self.evaluate(genome))
+                .collect()
+        }
+
+        // GIL Python: acquire the GIL once for the entire batch.
+        // Uses from_slice to avoid Vec allocation per genome.
+        #[cfg(not(Py_GIL_DISABLED))]
+        {
+            Python::with_gil(|py| {
+                genomes
+                    .iter()
+                    .map(|genome| {
+                        let genes = genome.genes();
+                        let array = PyArray1::from_slice(py, genes);
+
+                        match self.callback.call1(py, (array,)) {
+                            Ok(result) => {
+                                result.extract::<f64>(py).unwrap_or(f64::NEG_INFINITY)
+                            }
+                            Err(_) => f64::NEG_INFINITY,
+                        }
+                    })
+                    .collect()
+            })
+        }
     }
 }
 
@@ -402,7 +465,12 @@ impl PyGeneticAlgorithm {
         tournament_size = 3,
         lower_bounds = None,
         upper_bounds = None,
-        seed = None
+        seed = None,
+        early_stopping = None,
+        restart_on_stagnation = None,
+        local_search_iters = None,
+        mutation_rate_end = None,
+        random_immigrants = None
     ))]
     fn new(
         fitness_fn: PyObject,
@@ -416,6 +484,11 @@ impl PyGeneticAlgorithm {
         lower_bounds: Option<Vec<f64>>,
         upper_bounds: Option<Vec<f64>>,
         seed: Option<u64>,
+        early_stopping: Option<usize>,
+        restart_on_stagnation: Option<usize>,
+        local_search_iters: Option<usize>,
+        mutation_rate_end: Option<f64>,
+        random_immigrants: Option<usize>,
     ) -> PyResult<Self> {
         let mut builder = GaConfig::builder();
         builder
@@ -435,6 +508,21 @@ impl PyGeneticAlgorithm {
         }
         if let Some(s) = seed {
             builder.seed(s);
+        }
+        if let Some(es) = early_stopping {
+            builder.early_stopping(es);
+        }
+        if let Some(rs) = restart_on_stagnation {
+            builder.restart_on_stagnation(rs);
+        }
+        if let Some(ls) = local_search_iters {
+            builder.local_search_iters(ls);
+        }
+        if let Some(mre) = mutation_rate_end {
+            builder.mutation_rate_end(mre);
+        }
+        if let Some(ri) = random_immigrants {
+            builder.random_immigrants(ri);
         }
 
         let config = builder

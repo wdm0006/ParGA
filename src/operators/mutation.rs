@@ -175,20 +175,27 @@ impl Mutation<RealGenome> for RealMutation {
                     if rng.gen::<f64>() < rate {
                         let lo = lower.get(i).copied().unwrap_or(-10.0);
                         let hi = upper.get(i).copied().unwrap_or(10.0);
-                        let delta = (*gene - lo) / (hi - lo);
+                        let range = hi - lo;
+                        if range <= 0.0 {
+                            continue;
+                        }
+                        // Clamp gene to bounds before computing delta
+                        let clamped = gene.clamp(lo, hi);
+                        let delta = (clamped - lo) / range;
 
                         let u: f64 = rng.gen();
                         let delta_q = if u < 0.5 {
-                            let xy = 1.0 - delta;
+                            let xy = (1.0 - delta).max(0.0);
                             let val = 2.0 * u + (1.0 - 2.0 * u) * xy.powf(eta + 1.0);
-                            val.powf(1.0 / (eta + 1.0)) - 1.0
+                            val.max(0.0).powf(1.0 / (eta + 1.0)) - 1.0
                         } else {
-                            let xy = 1.0 - delta;
+                            let xy = (1.0 - delta).max(0.0);
                             1.0 - (2.0 * (1.0 - u) + 2.0 * (u - 0.5) * xy.powf(eta + 1.0))
+                                .max(0.0)
                                 .powf(1.0 / (eta + 1.0))
                         };
 
-                        *gene = (*gene + delta_q * (hi - lo)).clamp(lo, hi);
+                        *gene = (*gene + delta_q * range).clamp(lo, hi);
                     }
                 }
             }
