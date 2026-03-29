@@ -23,6 +23,7 @@ Example:
 from __future__ import annotations
 
 import multiprocessing as mp
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 from typing import Callable
 
@@ -31,14 +32,25 @@ import cloudpickle
 import numpy as np
 
 
-def _evaluate_batch_worker(args: tuple) -> list[float]:
+_worker_fitness_fn = None
+
+
+def _worker_init(fitness_fn_bytes: bytes) -> None:
+    """Initialize worker process with deserialized fitness function.
+
+    Called once per worker at pool startup via ProcessPoolExecutor initializer.
+    """
+    global _worker_fitness_fn  # noqa: PLW0603
+    _worker_fitness_fn = cloudpickle.loads(fitness_fn_bytes)
+
+
+def _evaluate_batch_worker(genomes: list) -> list[float]:
     """Worker function that evaluates a batch of genomes.
 
-    This runs in a separate process with its own Python interpreter.
+    This runs in a separate process. Uses the cached fitness function
+    deserialized once at worker startup via _worker_init.
     """
-    fitness_fn_bytes, genomes = args
-    fitness_fn = cloudpickle.loads(fitness_fn_bytes)
-    return [fitness_fn(genome) for genome in genomes]
+    return [_worker_fitness_fn(genome) for genome in genomes]
 
 
 class ParallelGA:
@@ -84,6 +96,14 @@ class ParallelGA:
         seed: int | None = None,
         chunk_size: int | None = None,
     ):
+        warnings.warn(
+            "ParallelGA is deprecated. Use GA() instead — on free-threaded "
+            "Python (3.13t+) it automatically uses Rust/rayon parallelism, "
+            "and on GIL Python it falls back to ProcessPoolExecutor.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         self.fitness_fn = fitness_fn
         self.genome_length = genome_length
         self.population_size = population_size
@@ -114,26 +134,51 @@ class ParallelGA:
         self,
         population: list[np.ndarray],
         executor: ProcessPoolExecutor,
+        existing_fitness: list[float | None] | None = None,
     ) -> list[float]:
-        """Evaluate fitness for all individuals in parallel."""
-        # Serialize the fitness function once with cloudpickle
-        fitness_fn_bytes = cloudpickle.dumps(self.fitness_fn)
+        """Evaluate fitness for individuals in parallel.
 
-        # Create batches
+        Args:
+            population: List of genomes to evaluate.
+            executor: Process pool executor with pre-initialized workers.
+            existing_fitness: Optional list parallel to population. Entries
+                that are not None are carried forward (e.g. elites); only
+                None entries are sent to workers for evaluation.
+        """
+        if existing_fitness is not None:
+            # Only evaluate individuals without fitness (offspring)
+            indices_to_eval = [
+                i for i, f in enumerate(existing_fitness) if f is None
+            ]
+            if not indices_to_eval:
+                return existing_fitness  # All have fitness already
+
+            genomes_to_eval = [population[i] for i in indices_to_eval]
+        else:
+            indices_to_eval = None
+            genomes_to_eval = population
+
+        # Create batches of genomes only (no function bytes)
         batches = []
-        for i in range(0, len(population), self.chunk_size):
-            batch = population[i : i + self.chunk_size]
-            batches.append((fitness_fn_bytes, batch))
+        for i in range(0, len(genomes_to_eval), self.chunk_size):
+            batches.append(genomes_to_eval[i : i + self.chunk_size])
 
         # Submit batches to workers
         futures = [executor.submit(_evaluate_batch_worker, batch) for batch in batches]
 
         # Collect results
-        all_fitness = []
+        evaluated_fitness = []
         for future in futures:
-            all_fitness.extend(future.result())
+            evaluated_fitness.extend(future.result())
 
-        return all_fitness
+        if existing_fitness is not None:
+            # Merge evaluated results back into full fitness list
+            result = list(existing_fitness)
+            for idx, fit in zip(indices_to_eval, evaluated_fitness):
+                result[idx] = fit
+            return result
+
+        return evaluated_fitness
 
     def _tournament_select(
         self,
@@ -193,10 +238,18 @@ class ParallelGA:
         best_individual = None
         best_fitness = float("-inf")
 
+        # Serialize fitness function once for the entire run
+        fitness_fn_bytes = cloudpickle.dumps(self.fitness_fn)
+
         # Use spawn to ensure clean worker processes
         ctx = mp.get_context("spawn")
 
-        with ProcessPoolExecutor(max_workers=self.n_workers, mp_context=ctx) as executor:
+        with ProcessPoolExecutor(
+            max_workers=self.n_workers,
+            mp_context=ctx,
+            initializer=_worker_init,
+            initargs=(fitness_fn_bytes,),
+        ) as executor:
             # Evaluate initial population
             fitness = self._evaluate_parallel(population, executor)
 
@@ -209,19 +262,27 @@ class ParallelGA:
 
             # Evolution loop
             for _gen in range(self.generations):
-                # Sort by fitness (descending)
-                sorted_indices = np.argsort(fitness)[::-1]
-                population = [population[i] for i in sorted_indices]
-                fitness = [fitness[i] for i in sorted_indices]
+                # Partial sort: only need top-k elites, not full sort
+                if self.elitism > 0 and self.elitism < len(fitness):
+                    fitness_arr = np.array(fitness)
+                    # argpartition gives indices such that the top-k are in
+                    # the first k positions (unordered among themselves)
+                    elite_indices = np.argpartition(
+                        -fitness_arr, self.elitism
+                    )[: self.elitism]
+                else:
+                    elite_indices = list(range(self.elitism))
 
-                # Create new population
+                # Create new population and track which have known fitness
                 new_population = []
+                new_fitness: list[float | None] = []
 
-                # Elitism: keep best individuals
-                for i in range(self.elitism):
+                # Elitism: keep best individuals with their fitness
+                for i in elite_indices:
                     new_population.append(population[i].copy())
+                    new_fitness.append(fitness[i])
 
-                # Generate offspring
+                # Generate offspring (fitness unknown = None)
                 while len(new_population) < self.population_size:
                     parent1 = self._tournament_select(population, fitness, rng)
                     parent2 = self._tournament_select(population, fitness, rng)
@@ -232,13 +293,17 @@ class ParallelGA:
                     child2 = self._mutate(child2, rng)
 
                     new_population.append(child1)
+                    new_fitness.append(None)
                     if len(new_population) < self.population_size:
                         new_population.append(child2)
+                        new_fitness.append(None)
 
                 population = new_population
 
-                # Evaluate new population
-                fitness = self._evaluate_parallel(population, executor)
+                # Evaluate only offspring (elites keep their fitness)
+                fitness = self._evaluate_parallel(
+                    population, executor, existing_fitness=new_fitness
+                )
 
                 # Track best
                 for i, f in enumerate(fitness):
@@ -318,6 +383,14 @@ class ParallelIslandModel:
         upper_bounds: list[float] | None = None,
         seed: int | None = None,
     ):
+        warnings.warn(
+            "ParallelIslandModel is deprecated. Use GA(islands=N) instead — "
+            "on free-threaded Python (3.13t+) it automatically uses Rust/rayon "
+            "parallelism, and on GIL Python it falls back to ProcessPoolExecutor.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         self.fitness_fn = fitness_fn
         self.genome_length = genome_length
         self.num_islands = num_islands
@@ -355,15 +428,35 @@ class ParallelIslandModel:
 
         ctx = mp.get_context("spawn")
 
-        # Serialize fitness function once
+        # Serialize fitness function once for the entire run
         fitness_fn_bytes = cloudpickle.dumps(self.fitness_fn)
 
-        with ProcessPoolExecutor(max_workers=self.n_workers, mp_context=ctx) as executor:
-            # Evaluate initial populations
-            for i, island in enumerate(islands):
-                batch = (fitness_fn_bytes, island)
-                future = executor.submit(_evaluate_batch_worker, batch)
-                island_fitness[i] = future.result()
+        with ProcessPoolExecutor(
+            max_workers=self.n_workers,
+            mp_context=ctx,
+            initializer=_worker_init,
+            initargs=(fitness_fn_bytes,),
+        ) as executor:
+            # Evaluate initial populations - batch all islands together
+            all_individuals = []
+            island_sizes = []
+            for island in islands:
+                all_individuals.extend(island)
+                island_sizes.append(len(island))
+
+            batches = []
+            for i in range(0, len(all_individuals), max(1, len(all_individuals) // (self.n_workers * 2))):
+                batches.append(all_individuals[i : i + max(1, len(all_individuals) // (self.n_workers * 2))])
+
+            futures = [executor.submit(_evaluate_batch_worker, batch) for batch in batches]
+            all_fitness_values = []
+            for future in futures:
+                all_fitness_values.extend(future.result())
+
+            offset = 0
+            for i, size in enumerate(island_sizes):
+                island_fitness[i] = all_fitness_values[offset : offset + size]
+                offset += size
 
             # Track best
             for island, fitness in zip(islands, island_fitness):
@@ -375,22 +468,31 @@ class ParallelIslandModel:
 
             # Evolution loop
             for gen in range(self.generations):
+                # Track which individuals are new (need evaluation)
+                all_new_fitness: list[float | None] = []
+
                 # Evolve each island for one generation
                 for island_idx in range(self.num_islands):
                     island = islands[island_idx]
                     fitness = island_fitness[island_idx]
 
-                    # Sort by fitness
-                    sorted_indices = np.argsort(fitness)[::-1]
-                    island = [island[i] for i in sorted_indices]
-                    fitness = [fitness[i] for i in sorted_indices]
+                    # Partial sort: only need top-k elites
+                    if self.elitism > 0 and self.elitism < len(fitness):
+                        fitness_arr = np.array(fitness)
+                        elite_indices = np.argpartition(
+                            -fitness_arr, self.elitism
+                        )[: self.elitism]
+                    else:
+                        elite_indices = list(range(self.elitism))
 
                     # Create new population
                     new_island = []
+                    new_island_fitness: list[float | None] = []
 
-                    # Elitism
-                    for i in range(self.elitism):
+                    # Elitism: keep best with their fitness
+                    for i in elite_indices:
                         new_island.append(island[i].copy())
+                        new_island_fitness.append(fitness[i])
 
                     # Generate offspring
                     while len(new_island) < self.island_population:
@@ -421,34 +523,50 @@ class ParallelIslandModel:
                         for child in [child1, child2]:
                             mask = rng.random(len(child)) < self.mutation_rate
                             if np.any(mask):
-                                upper = np.array(self.upper_bounds)
-                                lower = np.array(self.lower_bounds)
-                                sigma = (upper - lower) * 0.1
+                                ub = np.array(self.upper_bounds)
+                                lb = np.array(self.lower_bounds)
+                                sigma = (ub - lb) * 0.1
                                 child[mask] += rng.normal(0, sigma[mask])
-                                child[:] = np.clip(child, lower, upper)
+                                child[:] = np.clip(child, lb, ub)
 
                         new_island.append(child1)
+                        new_island_fitness.append(None)
                         if len(new_island) < self.island_population:
                             new_island.append(child2)
+                            new_island_fitness.append(None)
 
                     islands[island_idx] = new_island
+                    all_new_fitness.extend(new_island_fitness)
 
-                # Evaluate all islands in parallel
+                # Collect all individuals for batch evaluation
                 all_individuals = []
-                island_sizes = []
                 for island in islands:
                     all_individuals.extend(island)
-                    island_sizes.append(len(island))
 
-                # Batch evaluate
-                batch = (fitness_fn_bytes, all_individuals)
-                future = executor.submit(_evaluate_batch_worker, batch)
-                all_fitness = future.result()
+                # Only evaluate individuals without fitness (offspring)
+                indices_to_eval = [
+                    i for i, f in enumerate(all_new_fitness) if f is None
+                ]
+                if indices_to_eval:
+                    genomes_to_eval = [all_individuals[i] for i in indices_to_eval]
+                    chunk_size = max(1, len(genomes_to_eval) // (self.n_workers * 2))
+                    batches = []
+                    for i in range(0, len(genomes_to_eval), chunk_size):
+                        batches.append(genomes_to_eval[i : i + chunk_size])
+
+                    futures = [executor.submit(_evaluate_batch_worker, batch) for batch in batches]
+                    evaluated = []
+                    for future in futures:
+                        evaluated.extend(future.result())
+
+                    for idx, fit in zip(indices_to_eval, evaluated):
+                        all_new_fitness[idx] = fit
 
                 # Distribute fitness back to islands
                 offset = 0
-                for i, size in enumerate(island_sizes):
-                    island_fitness[i] = all_fitness[offset : offset + size]
+                for i, island in enumerate(islands):
+                    size = len(island)
+                    island_fitness[i] = all_new_fitness[offset : offset + size]
                     offset += size
 
                 # Migration (ring topology)
@@ -456,8 +574,12 @@ class ParallelIslandModel:
                     migrants = []
                     for i in range(self.num_islands):
                         # Get best individuals to migrate
-                        sorted_indices = np.argsort(island_fitness[i])[::-1]
-                        best_indices = sorted_indices[: self.migration_count]
+                        fitness_arr = np.array(island_fitness[i])
+                        mc = min(self.migration_count, len(fitness_arr))
+                        if mc < len(fitness_arr):
+                            best_indices = np.argpartition(-fitness_arr, mc)[: mc]
+                        else:
+                            best_indices = np.argsort(-fitness_arr)[: mc]
                         migrants.append([islands[i][j].copy() for j in best_indices])
 
                     # Send migrants to next island

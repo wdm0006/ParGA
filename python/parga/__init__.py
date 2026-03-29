@@ -42,9 +42,12 @@ from parga._parga import (
     SelectionMethod,
     ackley,
     griewank,
+    # Free-threaded utilities
+    is_free_threaded,
     rastrigin,
     rosenbrock,
     schwefel,
+    set_num_threads,
     # Benchmark functions
     sphere,
 )
@@ -71,11 +74,13 @@ __all__ = [
     "SelectionMethod",
     "ackley",
     "griewank",
+    "is_free_threaded",
     "maximize",
     "minimize",
     "rastrigin",
     "rosenbrock",
     "schwefel",
+    "set_num_threads",
     "sphere",
     "viz",
 ]

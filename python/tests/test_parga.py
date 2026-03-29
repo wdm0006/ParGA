@@ -11,8 +11,10 @@ from parga import (
     MutationMethod,
     SelectionMethod,
     ackley,
+    is_free_threaded,
     rastrigin,
     rosenbrock,
+    set_num_threads,
     sphere,
 )
 
@@ -311,3 +313,17 @@ class TestReproducibility:
         result2 = run_island()
 
         np.testing.assert_almost_equal(result1.best_fitness, result2.best_fitness)
+
+
+class TestFreeThreadedUtils:
+    """Tests for free-threaded Python utility functions."""
+
+    def test_is_free_threaded_returns_bool(self):
+        """is_free_threaded() returns a boolean."""
+        result = is_free_threaded()
+        assert isinstance(result, bool)
+
+    def test_set_num_threads_invalid(self):
+        """set_num_threads(0) raises ValueError."""
+        with pytest.raises(ValueError):
+            set_num_threads(0)

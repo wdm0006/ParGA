@@ -13,6 +13,14 @@ pub trait FitnessFunction<G: Genome>: Clone {
     ///
     /// Returns a value where higher is better.
     fn evaluate(&self, genome: &G) -> f64;
+
+    /// Evaluates fitness for a batch of genomes.
+    ///
+    /// The default implementation calls `evaluate()` individually.
+    /// Override for bulk optimizations (e.g. acquiring the Python GIL once).
+    fn evaluate_batch(&self, genomes: &[&G]) -> Vec<f64> {
+        genomes.iter().map(|g| self.evaluate(g)).collect()
+    }
 }
 
 /// Wrapper for function pointers as fitness functions.

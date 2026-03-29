@@ -307,31 +307,45 @@ where
         }
     }
 
-    /// Evaluates fitness for all islands.
+    /// Evaluates fitness for all islands using batch evaluation.
     fn evaluate_all_islands(&mut self) {
         let fitness_fn = &self.fitness_fn;
 
+        // Helper closure to batch-evaluate one island
+        let evaluate_island = |island: &mut Population<G>| {
+            let unevaluated: Vec<usize> = island
+                .individuals()
+                .iter()
+                .enumerate()
+                .filter(|(_, ind)| ind.fitness.is_none())
+                .map(|(i, _)| i)
+                .collect();
+
+            if !unevaluated.is_empty() {
+                let genomes: Vec<&G> = unevaluated
+                    .iter()
+                    .map(|&i| &island.individuals()[i].genome)
+                    .collect();
+
+                let results = fitness_fn.evaluate_batch(&genomes);
+
+                for (idx, fitness) in unevaluated.into_iter().zip(results) {
+                    island.individuals_mut()[idx].fitness = Some(fitness);
+                }
+            }
+
+            island.sort_by_fitness();
+        };
+
         #[cfg(feature = "parallel")]
         {
-            self.islands.par_iter_mut().for_each(|island| {
-                for ind in island.individuals_mut() {
-                    if ind.fitness.is_none() {
-                        ind.fitness = Some(fitness_fn.evaluate(&ind.genome));
-                    }
-                }
-                island.sort_by_fitness();
-            });
+            self.islands.par_iter_mut().for_each(evaluate_island);
         }
 
         #[cfg(not(feature = "parallel"))]
         {
             for island in &mut self.islands {
-                for ind in island.individuals_mut() {
-                    if ind.fitness.is_none() {
-                        ind.fitness = Some(fitness_fn.evaluate(&ind.genome));
-                    }
-                }
-                island.sort_by_fitness();
+                evaluate_island(island);
             }
         }
     }
