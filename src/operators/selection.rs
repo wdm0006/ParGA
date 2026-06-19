@@ -110,7 +110,7 @@ fn roulette_selection<G: Genome + Clone, R: Rng>(
     let min_fitness = individuals
         .iter()
         .filter_map(|i| i.fitness)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(0.0);
 
     let offset = if min_fitness < 0.0 {
@@ -230,7 +230,7 @@ fn sus_selection<G: Genome + Clone, R: Rng>(
     let min_fitness = individuals
         .iter()
         .filter_map(|i| i.fitness)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(0.0);
 
     let offset = if min_fitness < 0.0 {
@@ -327,6 +327,33 @@ mod tests {
     fn test_truncation_selection() {
         let pop = create_test_population();
         let selected = truncation_selection(&pop, 5, 0.5);
+        assert_eq!(selected.len(), 5);
+    }
+
+    #[test]
+    fn test_roulette_and_sus_selection_with_nan_fitness() {
+        let individuals = vec![
+            Individual {
+                genome: RealGenome::new(vec![1.0]),
+                fitness: Some(10.0),
+            },
+            Individual {
+                genome: RealGenome::new(vec![2.0]),
+                fitness: Some(f64::NAN),
+            },
+            Individual {
+                genome: RealGenome::new(vec![3.0]),
+                fitness: Some(30.0),
+            },
+        ];
+        let pop = Population::from_individuals(individuals);
+
+        let mut rng = crate::rng::create_rng(Some(42));
+        let selected = roulette_selection(&pop, 5, &mut rng);
+        assert_eq!(selected.len(), 5);
+
+        let mut rng = crate::rng::create_rng(Some(42));
+        let selected = sus_selection(&pop, 5, &mut rng);
         assert_eq!(selected.len(), 5);
     }
 }
