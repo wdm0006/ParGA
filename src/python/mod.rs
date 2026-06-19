@@ -3,8 +3,10 @@
 //! This module provides PyO3 bindings to expose the genetic algorithm
 //! functionality to Python.
 
+use std::sync::{Arc, Mutex};
+
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 #[cfg(Py_GIL_DISABLED)]
@@ -71,12 +73,50 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Python wrapper for fitness function that calls back to Python.
 struct PyFitness {
     callback: PyObject,
+    /// First error raised by the callback, if any. Recording a `String`
+    /// (rather than a `PyErr`) keeps the slot `Send` for use under
+    /// `py.allow_threads`. Surfaced to the caller after the run completes.
+    error: Arc<Mutex<Option<String>>>,
+}
+
+impl PyFitness {
+    fn new(callback: PyObject) -> Self {
+        Self {
+            callback,
+            error: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Record the first callback failure; later failures are ignored.
+    fn record_error(&self, message: String) {
+        let mut slot = self.error.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(message);
+        }
+    }
+
+    /// Evaluate the callback for a single genome, recording any failure.
+    fn call(&self, py: Python<'_>, array: Bound<'_, PyArray1<f64>>) -> f64 {
+        let result = match self.callback.call1(py, (array,)) {
+            Ok(result) => result,
+            Err(err) => {
+                self.record_error(err.to_string());
+                return f64::NEG_INFINITY;
+            }
+        };
+
+        result.extract::<f64>(py).unwrap_or_else(|_| {
+            self.record_error("fitness function did not return a float".to_string());
+            f64::NEG_INFINITY
+        })
+    }
 }
 
 impl Clone for PyFitness {
     fn clone(&self) -> Self {
         Python::with_gil(|py| Self {
             callback: self.callback.clone_ref(py),
+            error: Arc::clone(&self.error),
         })
     }
 }
@@ -86,11 +126,7 @@ impl FitnessFunction<RealGenome> for PyFitness {
         Python::with_gil(|py| {
             let genes = genome.genes();
             let array = genes.to_vec().into_pyarray(py);
-
-            match self.callback.call1(py, (array,)) {
-                Ok(result) => result.extract::<f64>(py).unwrap_or(f64::NEG_INFINITY),
-                Err(_) => f64::NEG_INFINITY,
-            }
+            self.call(py, array)
         })
     }
 
@@ -115,13 +151,7 @@ impl FitnessFunction<RealGenome> for PyFitness {
                     .map(|genome| {
                         let genes = genome.genes();
                         let array = PyArray1::from_slice(py, genes);
-
-                        match self.callback.call1(py, (array,)) {
-                            Ok(result) => {
-                                result.extract::<f64>(py).unwrap_or(f64::NEG_INFINITY)
-                            }
-                            Err(_) => f64::NEG_INFINITY,
-                        }
+                        self.call(py, array)
                     })
                     .collect()
             })
@@ -555,12 +585,11 @@ impl PyGeneticAlgorithm {
 
     /// Runs the genetic algorithm.
     fn run(&self, py: Python<'_>) -> PyResult<PyGaResult> {
-        let fitness = PyFitness {
-            callback: self.fitness_fn.clone_ref(py),
-        };
+        let fitness = PyFitness::new(self.fitness_fn.clone_ref(py));
+        let error_slot = Arc::clone(&fitness.error);
 
         // Allow other Python threads to run during evolution
-        py.allow_threads(|| {
+        let result = py.allow_threads(|| {
             let mut ga: GeneticAlgorithm<RealGenome, PyFitness> =
                 GeneticAlgorithm::new(self.config.clone(), fitness);
 
@@ -576,9 +605,16 @@ impl PyGeneticAlgorithm {
                 ga = ga.with_mutation(MutationOperator::Real(mutation));
             }
 
-            let result = ga.run();
-            Ok(PyGaResult::from(result))
-        })
+            ga.run()
+        });
+
+        if let Some(message) = error_slot.lock().unwrap().take() {
+            return Err(PyRuntimeError::new_err(format!(
+                "fitness function failed: {message}"
+            )));
+        }
+
+        Ok(PyGaResult::from(result))
     }
 }
 
@@ -702,11 +738,10 @@ impl PyIslandModel {
 
     /// Runs the island model.
     fn run(&self, py: Python<'_>) -> PyResult<PyIslandResult> {
-        let fitness = PyFitness {
-            callback: self.fitness_fn.clone_ref(py),
-        };
+        let fitness = PyFitness::new(self.fitness_fn.clone_ref(py));
+        let error_slot = Arc::clone(&fitness.error);
 
-        py.allow_threads(|| {
+        let result = py.allow_threads(|| {
             let mut model: IslandModel<RealGenome, PyFitness> =
                 IslandModel::new(self.config.clone(), fitness);
 
@@ -722,16 +757,22 @@ impl PyIslandModel {
                 model = model.with_mutation(MutationOperator::Real(mutation));
             }
 
-            let result = model.run();
+            model.run()
+        });
 
-            Ok(PyIslandResult {
-                best_fitness: result.best_fitness,
-                generations: result.generations,
-                converged: result.converged,
-                best_genes: result.best_individual.genome.genes().to_vec(),
-                island_best_fitness: result.island_best_fitness,
-                fitness_history: result.fitness_history,
-            })
+        if let Some(message) = error_slot.lock().unwrap().take() {
+            return Err(PyRuntimeError::new_err(format!(
+                "fitness function failed: {message}"
+            )));
+        }
+
+        Ok(PyIslandResult {
+            best_fitness: result.best_fitness,
+            generations: result.generations,
+            converged: result.converged,
+            best_genes: result.best_individual.genome.genes().to_vec(),
+            island_best_fitness: result.island_best_fitness,
+            fitness_history: result.fitness_history,
         })
     }
 }

@@ -315,6 +315,106 @@ class TestReproducibility:
         np.testing.assert_almost_equal(result1.best_fitness, result2.best_fitness)
 
 
+class TestFitnessCallbackErrors:
+    """Tests that buggy fitness callbacks surface errors instead of being swallowed."""
+
+    def test_ga_raising_callback(self):
+        """A callback that raises makes GeneticAlgorithm.run() raise."""
+
+        def raising_fitness(genes: np.ndarray) -> float:
+            raise ValueError("boom from fitness")
+
+        ga = GeneticAlgorithm(
+            fitness_fn=raising_fitness,
+            genome_length=3,
+            population_size=20,
+            generations=5,
+            seed=42,
+        )
+        with pytest.raises(RuntimeError, match="boom from fitness"):
+            ga.run()
+
+    def test_ga_non_float_callback(self):
+        """A callback returning a non-float makes GeneticAlgorithm.run() raise."""
+
+        def non_float_fitness(genes: np.ndarray):
+            return None
+
+        ga = GeneticAlgorithm(
+            fitness_fn=non_float_fitness,
+            genome_length=3,
+            population_size=20,
+            generations=5,
+            seed=42,
+        )
+        with pytest.raises(RuntimeError, match="did not return a float"):
+            ga.run()
+
+    def test_ga_string_return_callback(self):
+        """A callback returning a string makes GeneticAlgorithm.run() raise."""
+
+        def string_fitness(genes: np.ndarray):
+            return "not a number"
+
+        ga = GeneticAlgorithm(
+            fitness_fn=string_fitness,
+            genome_length=3,
+            population_size=20,
+            generations=5,
+            seed=42,
+        )
+        with pytest.raises(RuntimeError, match="did not return a float"):
+            ga.run()
+
+    def test_island_raising_callback(self):
+        """A callback that raises makes IslandModel.run() raise."""
+
+        def raising_fitness(genes: np.ndarray) -> float:
+            raise KeyError("missing key in fitness")
+
+        island_ga = IslandModel(
+            fitness_fn=raising_fitness,
+            genome_length=3,
+            num_islands=2,
+            island_population=20,
+            generations=5,
+            migration_interval=5,
+            seed=42,
+        )
+        with pytest.raises(RuntimeError, match="missing key in fitness"):
+            island_ga.run()
+
+    def test_island_non_float_callback(self):
+        """A callback returning a non-float makes IslandModel.run() raise."""
+
+        def non_float_fitness(genes: np.ndarray):
+            return None
+
+        island_ga = IslandModel(
+            fitness_fn=non_float_fitness,
+            genome_length=3,
+            num_islands=2,
+            island_population=20,
+            generations=5,
+            migration_interval=5,
+            seed=42,
+        )
+        with pytest.raises(RuntimeError, match="did not return a float"):
+            island_ga.run()
+
+    def test_correct_callback_unaffected(self):
+        """A correct float-returning callback still succeeds."""
+        ga = GeneticAlgorithm(
+            fitness_fn=simple_fitness,
+            genome_length=3,
+            population_size=20,
+            generations=5,
+            seed=42,
+        )
+        result = ga.run()
+        assert result.best_fitness is not None
+
+
 class TestFreeThreadedUtils:
     """Tests for free-threaded Python utility functions."""
 
