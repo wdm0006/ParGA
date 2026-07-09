@@ -305,7 +305,12 @@ where
                     let upper = &self.cached_upper;
                     let individuals = self.population.individuals_mut();
                     for ind in individuals.iter_mut().skip(elitism) {
-                        *ind = Individual::new(G::random(&mut restart_rng, genome_length, lower, upper));
+                        *ind = Individual::new(G::random(
+                            &mut restart_rng,
+                            genome_length,
+                            lower,
+                            upper,
+                        ));
                     }
                     self.evaluate_population();
                 }
@@ -336,7 +341,8 @@ where
         );
 
         // Create new population with elites
-        let mut new_individuals: Vec<Individual<G>> = Vec::with_capacity(self.config.population_size);
+        let mut new_individuals: Vec<Individual<G>> =
+            Vec::with_capacity(self.config.population_size);
         new_individuals.extend(
             self.population
                 .individuals()

@@ -63,4 +63,8 @@ warn_unused_configs = true
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
-addopts = "-v --tb=short"
+# Use importlib import mode so the compiled `parga` wheel is imported from
+# site-packages instead of being shadowed by the source `python/parga/` package
+# (which lacks the built `_parga` extension) when pytest prepends the source
+# directory to sys.path.
+addopts = "-v --tb=short --import-mode=importlib"
