@@ -178,7 +178,6 @@ fn test_convergence_detection() {
 }
 
 #[test]
-#[ignore = "Reproducibility requires thread-local RNG seeding, not yet implemented"]
 fn test_reproducibility_with_seed() {
     let config1 = GaConfig::builder()
         .population_size(50)
@@ -200,6 +199,10 @@ fn test_reproducibility_with_seed() {
 
     // Results should be identical with the same seed
     assert!((result1.best_fitness - result2.best_fitness).abs() < 1e-10);
+    assert_eq!(
+        result1.best_individual.genome.genes(),
+        result2.best_individual.genome.genes()
+    );
 }
 
 #[test]

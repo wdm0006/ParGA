@@ -53,6 +53,7 @@ pub mod rng;
 #[cfg(feature = "python")]
 pub mod python;
 
+use rand::rngs::StdRng;
 use rand::Rng;
 
 pub use error::{Error, Result};
@@ -187,6 +188,7 @@ where
     fitness_history: Vec<f64>,
     cached_lower: Vec<f64>,
     cached_upper: Vec<f64>,
+    rng: StdRng,
 }
 
 impl<G, F> GeneticAlgorithm<G, F>
@@ -214,6 +216,7 @@ where
             fitness_fn,
             generation: 0,
             fitness_history: Vec::new(),
+            rng,
         }
     }
 
@@ -226,6 +229,7 @@ where
         crossover: CrossoverOperator<G>,
         mutation: MutationOperator<G>,
     ) -> Self {
+        let rng = rng::create_rng(config.seed);
         let (lower, upper) = config.bounds();
         Self {
             config,
@@ -238,6 +242,7 @@ where
             fitness_history: Vec::new(),
             cached_lower: lower,
             cached_upper: upper,
+            rng,
         }
     }
 
@@ -298,15 +303,15 @@ where
             // Restart: reinitialize non-elite population on stagnation
             if let Some(patience) = restart_patience {
                 if stagnation_count >= patience && stagnation_count % patience == 0 {
-                    let mut restart_rng = rand::thread_rng();
                     let elitism = self.config.elitism;
                     let genome_length = self.config.genome_length;
                     let lower = &self.cached_lower;
                     let upper = &self.cached_upper;
+                    let restart_rng = &mut self.rng;
                     let individuals = self.population.individuals_mut();
                     for ind in individuals.iter_mut().skip(elitism) {
                         *ind = Individual::new(G::random(
-                            &mut restart_rng,
+                            &mut *restart_rng,
                             genome_length,
                             lower,
                             upper,
@@ -331,13 +336,11 @@ where
 
     /// Runs a single generation step.
     pub fn step(&mut self) {
-        let mut rng = rand::thread_rng();
-
         // Selection
         let parents = self.selection.select(
             &self.population,
             self.config.population_size - self.config.elitism,
-            &mut rng,
+            &mut self.rng,
         );
 
         // Create new population with elites
@@ -356,9 +359,9 @@ where
         let upper = &self.cached_upper;
         for chunk in parents.chunks(2) {
             if chunk.len() == 2 {
-                let (child1, child2) = if rng.gen::<f64>() < self.config.crossover_rate {
+                let (child1, child2) = if self.rng.gen::<f64>() < self.config.crossover_rate {
                     self.crossover
-                        .crossover(&chunk[0].genome, &chunk[1].genome, &mut rng)
+                        .crossover(&chunk[0].genome, &chunk[1].genome, &mut self.rng)
                 } else {
                     (chunk[0].genome.clone(), chunk[1].genome.clone())
                 };
@@ -371,14 +374,14 @@ where
                     self.config.mutation_rate,
                     lower,
                     upper,
-                    &mut rng,
+                    &mut self.rng,
                 );
                 self.mutation.mutate(
                     &mut ind2.genome,
                     self.config.mutation_rate,
                     lower,
                     upper,
-                    &mut rng,
+                    &mut self.rng,
                 );
 
                 new_individuals.push(ind1);
@@ -392,7 +395,7 @@ where
                     self.config.mutation_rate,
                     lower,
                     upper,
-                    &mut rng,
+                    &mut self.rng,
                 );
                 new_individuals.push(ind);
             }
@@ -405,14 +408,14 @@ where
         if let Some(n_immigrants) = self.config.random_immigrants {
             if n_immigrants > 0 {
                 let pop_size = self.population.len();
-                let mut imm_rng = rand::thread_rng();
                 let genome_length = self.config.genome_length;
                 let lower = &self.cached_lower;
                 let upper = &self.cached_upper;
                 let start = pop_size.saturating_sub(n_immigrants);
+                let imm_rng = &mut self.rng;
                 let individuals = self.population.individuals_mut();
                 for ind in individuals.iter_mut().skip(start) {
-                    *ind = Individual::new(G::random(&mut imm_rng, genome_length, lower, upper));
+                    *ind = Individual::new(G::random(&mut *imm_rng, genome_length, lower, upper));
                 }
                 // Evaluate the new immigrants
                 let immigrant_genomes: Vec<&G> = self
@@ -451,7 +454,7 @@ where
         let mut current_genes: Vec<f64> = best.genome.as_f64_vec();
         let mut current_fitness = best_fitness;
 
-        let mut rng = rand::thread_rng();
+        let rng = &mut self.rng;
         let lower = &self.cached_lower;
         let upper = &self.cached_upper;
         let len = current_genes.len();
