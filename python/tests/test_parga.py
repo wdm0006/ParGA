@@ -274,7 +274,6 @@ class TestOptimization:
 class TestReproducibility:
     """Tests for reproducibility with seeds."""
 
-    @pytest.mark.skip(reason="Reproducibility requires thread-local RNG seeding")
     def test_ga_reproducibility(self):
         """Test that same seed produces same results."""
 
@@ -294,7 +293,10 @@ class TestReproducibility:
         np.testing.assert_almost_equal(result1.best_fitness, result2.best_fitness)
         np.testing.assert_array_almost_equal(result1.best_genes(), result2.best_genes())
 
-    @pytest.mark.skip(reason="Reproducibility requires thread-local RNG seeding")
+    @pytest.mark.skip(
+        reason="Island reproducibility needs deterministic per-island seeding "
+        "(islands evolve under rayon par_iter_mut); tracked as follow-up work."
+    )
     def test_island_reproducibility(self):
         """Test island model reproducibility."""
 
