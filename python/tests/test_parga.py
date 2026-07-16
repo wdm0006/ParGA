@@ -293,10 +293,6 @@ class TestReproducibility:
         np.testing.assert_almost_equal(result1.best_fitness, result2.best_fitness)
         np.testing.assert_array_almost_equal(result1.best_genes(), result2.best_genes())
 
-    @pytest.mark.skip(
-        reason="Island reproducibility needs deterministic per-island seeding "
-        "(islands evolve under rayon par_iter_mut); tracked as follow-up work."
-    )
     def test_island_reproducibility(self):
         """Test island model reproducibility."""
 
@@ -315,6 +311,10 @@ class TestReproducibility:
         result2 = run_island()
 
         np.testing.assert_almost_equal(result1.best_fitness, result2.best_fitness)
+        np.testing.assert_array_almost_equal(result1.best_genes(), result2.best_genes())
+        np.testing.assert_array_almost_equal(
+            result1.fitness_history(), result2.fitness_history()
+        )
 
 
 class TestFitnessCallbackErrors:

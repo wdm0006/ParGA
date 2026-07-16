@@ -17,6 +17,9 @@ use crate::operators::{
 use crate::population::{Individual, Population};
 use crate::rng;
 
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -191,6 +194,10 @@ where
     mutation: MutationOperator<G>,
     generation: usize,
     fitness_history: Vec<f64>,
+    /// One RNG per island, so rayon scheduling cannot change which stream an
+    /// island consumes.
+    island_rngs: Vec<StdRng>,
+    migration_rng: StdRng,
 }
 
 impl<G, F> IslandModel<G, F>
@@ -210,6 +217,11 @@ where
             .map(|_| Population::random(&mut rng, config.island_population, &lower, &upper))
             .collect();
 
+        let island_rngs: Vec<StdRng> = (0..config.num_islands)
+            .map(|_| StdRng::seed_from_u64(rng.gen()))
+            .collect();
+        let migration_rng = StdRng::seed_from_u64(rng.gen());
+
         Self {
             selection: SelectionOperator::Tournament(config.tournament_size),
             crossover: CrossoverOperator::default(),
@@ -219,6 +231,8 @@ where
             fitness_fn,
             generation: 0,
             fitness_history: Vec::new(),
+            island_rngs,
+            migration_rng,
         }
     }
 
@@ -290,18 +304,21 @@ where
 
         #[cfg(feature = "parallel")]
         {
-            self.islands.par_iter_mut().for_each(|island| {
-                evolve_population(
-                    island, config, selection, crossover, mutation, &lower, &upper,
-                );
-            });
+            self.islands
+                .par_iter_mut()
+                .zip(self.island_rngs.par_iter_mut())
+                .for_each(|(island, island_rng)| {
+                    evolve_population(
+                        island, config, selection, crossover, mutation, &lower, &upper, island_rng,
+                    );
+                });
         }
 
         #[cfg(not(feature = "parallel"))]
         {
-            for island in &mut self.islands {
+            for (island, island_rng) in self.islands.iter_mut().zip(self.island_rngs.iter_mut()) {
                 evolve_population(
-                    island, config, selection, crossover, mutation, &lower, &upper,
+                    island, config, selection, crossover, mutation, &lower, &upper, island_rng,
                 );
             }
         }
@@ -437,7 +454,7 @@ where
             }
 
             MigrationTopology::Random => {
-                let mut rng = rng::create_rng(None);
+                let rng = &mut self.migration_rng;
                 let mut migrants: Vec<Vec<Individual<G>>> = Vec::with_capacity(num_islands);
 
                 for island in &self.islands {
@@ -452,7 +469,6 @@ where
 
                 for (from, island_migrants) in migrants.into_iter().enumerate() {
                     for mut migrant in island_migrants {
-                        use rand::Rng;
                         let mut dest = rng.gen_range(0..num_islands);
                         while dest == from {
                             dest = rng.gen_range(0..num_islands);
@@ -618,6 +634,7 @@ where
 }
 
 /// Helper function to evolve a single population.
+#[allow(clippy::too_many_arguments)]
 fn evolve_population<G>(
     population: &mut Population<G>,
     config: &IslandConfig,
@@ -626,19 +643,18 @@ fn evolve_population<G>(
     mutation: &MutationOperator<G>,
     lower: &[f64],
     upper: &[f64],
+    rng: &mut StdRng,
 ) where
     G: Genome + Clone,
     SelectionOperator: Selection<G>,
     CrossoverOperator<G>: Crossover<G>,
     MutationOperator<G>: Mutation<G>,
 {
-    let mut rng = rng::create_rng(None);
-
     // Selection
     let parents = selection.select(
         population,
         config.island_population - config.elitism,
-        &mut rng,
+        &mut *rng,
     );
 
     // Preserve elites
@@ -653,8 +669,8 @@ fn evolve_population<G>(
     // Crossover and mutation
     for chunk in parents.chunks(2) {
         if chunk.len() == 2 {
-            let (child1, child2) = if rand::random::<f64>() < config.crossover_rate {
-                crossover.crossover(&chunk[0].genome, &chunk[1].genome, &mut rng)
+            let (child1, child2) = if rng.gen::<f64>() < config.crossover_rate {
+                crossover.crossover(&chunk[0].genome, &chunk[1].genome, &mut *rng)
             } else {
                 (chunk[0].genome.clone(), chunk[1].genome.clone())
             };
@@ -667,14 +683,14 @@ fn evolve_population<G>(
                 config.mutation_rate,
                 lower,
                 upper,
-                &mut rng,
+                &mut *rng,
             );
             mutation.mutate(
                 &mut ind2.genome,
                 config.mutation_rate,
                 lower,
                 upper,
-                &mut rng,
+                &mut *rng,
             );
 
             new_individuals.push(ind1);
@@ -688,7 +704,7 @@ fn evolve_population<G>(
                 config.mutation_rate,
                 lower,
                 upper,
-                &mut rng,
+                &mut *rng,
             );
             new_individuals.push(ind);
         }
@@ -743,5 +759,117 @@ mod tests {
 
         assert!(result.best_fitness.is_finite());
         assert_eq!(result.island_best_fitness.len(), 2);
+    }
+
+    fn seeded_island_run(
+        seed: Option<u64>,
+        topology: MigrationTopology,
+    ) -> IslandResult<RealGenome> {
+        let mut builder = IslandConfig::builder();
+        builder
+            .num_islands(3)
+            .island_population(20)
+            .genome_length(5)
+            .generations(20)
+            .migration_interval(5)
+            .topology(topology);
+        if let Some(seed) = seed {
+            builder.seed(seed);
+        }
+        let config = builder.build().unwrap();
+
+        let mut island_model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere);
+        island_model.run()
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn test_island_reproducibility_with_seed() {
+        let a = seeded_island_run(Some(12345), MigrationTopology::Ring);
+        let b = seeded_island_run(Some(12345), MigrationTopology::Ring);
+
+        assert_eq!(a.best_fitness, b.best_fitness);
+        assert_eq!(
+            a.best_individual.genome.genes(),
+            b.best_individual.genome.genes()
+        );
+        assert_eq!(a.fitness_history, b.fitness_history);
+        assert_eq!(a.island_best_fitness, b.island_best_fitness);
+    }
+
+    /// Builds a model whose islands are smaller than `island_population`, so
+    /// migrants survive the post-migration truncation and the random
+    /// destination choice is observable.
+    fn random_migration_model(seed: u64) -> IslandModel<RealGenome, Sphere> {
+        let config = IslandConfig::builder()
+            .num_islands(4)
+            .island_population(20)
+            .migration_count(2)
+            .genome_length(2)
+            .topology(MigrationTopology::Random)
+            .seed(seed)
+            .build()
+            .unwrap();
+
+        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere);
+        model.islands = (0..4)
+            .map(|island| {
+                let individuals = (0..3)
+                    .map(|i| {
+                        let tag = f64::from(island * 10 + i);
+                        Individual::with_fitness(RealGenome::new(vec![tag, tag]), -tag)
+                    })
+                    .collect();
+                Population::from_individuals(individuals)
+            })
+            .collect();
+        model
+    }
+
+    /// The genes of every individual on every island, which identifies exactly
+    /// which migrant landed where.
+    fn island_contents(model: &IslandModel<RealGenome, Sphere>) -> Vec<Vec<Vec<f64>>> {
+        model
+            .islands
+            .iter()
+            .map(|island| {
+                island
+                    .individuals()
+                    .iter()
+                    .map(|ind| ind.genome.genes().to_vec())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_random_topology_migration_is_deterministic_with_seed() {
+        let mut a = random_migration_model(777);
+        let mut b = random_migration_model(777);
+        a.migrate();
+        b.migrate();
+
+        let contents_a = island_contents(&a);
+        // Migrants actually moved, otherwise this asserts nothing.
+        assert_ne!(contents_a, island_contents(&random_migration_model(777)));
+        assert_eq!(contents_a, island_contents(&b));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn test_island_random_topology_reproducibility_with_seed() {
+        let a = seeded_island_run(Some(777), MigrationTopology::Random);
+        let b = seeded_island_run(Some(777), MigrationTopology::Random);
+
+        assert_eq!(a.best_fitness, b.best_fitness);
+        assert_eq!(a.fitness_history, b.fitness_history);
+    }
+
+    #[test]
+    fn test_island_without_seed_is_random() {
+        let a = seeded_island_run(None, MigrationTopology::Ring);
+        let b = seeded_island_run(None, MigrationTopology::Ring);
+
+        assert_ne!(a.fitness_history, b.fitness_history);
     }
 }
