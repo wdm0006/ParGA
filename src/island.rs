@@ -410,8 +410,7 @@ where
                 // Send migrants to next island
                 for (i, island_migrants) in migrants.into_iter().enumerate() {
                     let dest = (i + 1) % num_islands;
-                    for mut migrant in island_migrants {
-                        migrant.invalidate_fitness(); // Re-evaluate in new context
+                    for migrant in island_migrants {
                         self.islands[dest].push(migrant);
                     }
                     // Trim destination island to maintain size
@@ -440,9 +439,7 @@ where
                             if let Some(migrant) =
                                 all_migrants[from].get(to % all_migrants[from].len())
                             {
-                                let mut m = migrant.clone();
-                                m.invalidate_fitness();
-                                self.islands[to].push(m);
+                                self.islands[to].push(migrant.clone());
                             }
                         }
                     }
@@ -468,12 +465,11 @@ where
                 }
 
                 for (from, island_migrants) in migrants.into_iter().enumerate() {
-                    for mut migrant in island_migrants {
+                    for migrant in island_migrants {
                         let mut dest = rng.gen_range(0..num_islands);
                         while dest == from {
                             dest = rng.gen_range(0..num_islands);
                         }
-                        migrant.invalidate_fitness();
                         self.islands[dest].push(migrant);
                     }
                 }
@@ -505,10 +501,7 @@ where
 
                 // Hub sends to satellites
                 for i in 1..num_islands {
-                    if let Some(mut migrant) =
-                        hub_migrants.get((i - 1) % hub_migrants.len()).cloned()
-                    {
-                        migrant.invalidate_fitness();
+                    if let Some(migrant) = hub_migrants.get((i - 1) % hub_migrants.len()).cloned() {
                         self.islands[i].push(migrant);
                     }
                     self.islands[i].truncate(self.config.island_population);
@@ -516,8 +509,7 @@ where
 
                 // Satellites send to hub
                 for migrants in satellite_migrants {
-                    for mut migrant in migrants {
-                        migrant.invalidate_fitness();
+                    for migrant in migrants {
                         self.islands[0].push(migrant);
                     }
                 }
@@ -541,17 +533,13 @@ where
                     // Send to previous
                     if i > 0 {
                         if let Some(migrant) = migrants[i].first() {
-                            let mut m = migrant.clone();
-                            m.invalidate_fitness();
-                            self.islands[i - 1].push(m);
+                            self.islands[i - 1].push(migrant.clone());
                         }
                     }
                     // Send to next
                     if i < num_islands - 1 {
                         if let Some(migrant) = migrants[i].last() {
-                            let mut m = migrant.clone();
-                            m.invalidate_fitness();
-                            self.islands[i + 1].push(m);
+                            self.islands[i + 1].push(migrant.clone());
                         }
                     }
                 }
@@ -759,6 +747,40 @@ mod tests {
 
         assert!(result.best_fitness.is_finite());
         assert_eq!(result.island_best_fitness.len(), 2);
+    }
+
+    #[test]
+    fn test_ring_migration_moves_individual_during_run() {
+        let config = IslandConfig::builder()
+            .num_islands(2)
+            .island_population(2)
+            .migration_count(1)
+            .migration_interval(1)
+            .generations(1)
+            .genome_length(1)
+            .elitism(2)
+            .seed(42)
+            .build()
+            .unwrap();
+
+        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere);
+        model.islands = vec![
+            Population::from_individuals(vec![
+                Individual::new(RealGenome::new(vec![0.0])),
+                Individual::new(RealGenome::new(vec![1.0])),
+            ]),
+            Population::from_individuals(vec![
+                Individual::new(RealGenome::new(vec![10.0])),
+                Individual::new(RealGenome::new(vec![11.0])),
+            ]),
+        ];
+
+        model.run();
+
+        assert!(model.islands[1]
+            .individuals()
+            .iter()
+            .any(|individual| individual.genome.genes() == [0.0]));
     }
 
     fn seeded_island_run(
