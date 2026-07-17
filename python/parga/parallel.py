@@ -23,6 +23,7 @@ Example:
 from __future__ import annotations
 
 import multiprocessing as mp
+import sys
 import warnings
 from concurrent.futures import ProcessPoolExecutor
 from typing import Callable
@@ -33,6 +34,29 @@ import numpy as np
 
 
 _worker_fitness_fn = None
+
+
+def _dumps_fitness_fn(fitness_fn: Callable) -> bytes:
+    """Serialize a fitness function for use in worker processes.
+
+    Functions defined at module level are pickled *by reference* by default,
+    which requires the defining module to be importable on the worker's
+    ``sys.path``. That fails for fitness functions defined in test suites,
+    scripts, or notebooks (e.g. a ``tests`` package or ``__main__``) that are
+    not installed. To make workers robust regardless of where the function
+    lives, force cloudpickle to serialize its defining module *by value*.
+    """
+    module_name = getattr(fitness_fn, "__module__", None)
+    module = sys.modules.get(module_name) if module_name else None
+    # ``__main__`` is already pickled by value by cloudpickle. Only real
+    # modules with a filesystem source can be registered by value.
+    if module is not None and module_name != "__main__" and hasattr(module, "__file__"):
+        cloudpickle.register_pickle_by_value(module)
+        try:
+            return cloudpickle.dumps(fitness_fn)
+        finally:
+            cloudpickle.unregister_pickle_by_value(module)
+    return cloudpickle.dumps(fitness_fn)
 
 
 def _worker_init(fitness_fn_bytes: bytes) -> None:
@@ -239,7 +263,7 @@ class ParallelGA:
         best_fitness = float("-inf")
 
         # Serialize fitness function once for the entire run
-        fitness_fn_bytes = cloudpickle.dumps(self.fitness_fn)
+        fitness_fn_bytes = _dumps_fitness_fn(self.fitness_fn)
 
         # Use spawn to ensure clean worker processes
         ctx = mp.get_context("spawn")
@@ -429,7 +453,7 @@ class ParallelIslandModel:
         ctx = mp.get_context("spawn")
 
         # Serialize fitness function once for the entire run
-        fitness_fn_bytes = cloudpickle.dumps(self.fitness_fn)
+        fitness_fn_bytes = _dumps_fitness_fn(self.fitness_fn)
 
         with ProcessPoolExecutor(
             max_workers=self.n_workers,
@@ -580,16 +604,19 @@ class ParallelIslandModel:
                             best_indices = np.argpartition(-fitness_arr, mc)[: mc]
                         else:
                             best_indices = np.argsort(-fitness_arr)[: mc]
-                        migrants.append([islands[i][j].copy() for j in best_indices])
+                        migrants.append(
+                            [(islands[i][j].copy(), island_fitness[i][j]) for j in best_indices]
+                        )
 
                     # Send migrants to next island
                     for i in range(self.num_islands):
                         dest = (i + 1) % self.num_islands
-                        for migrant in migrants[i]:
-                            # Replace worst individuals
+                        for migrant, migrant_fitness in migrants[i]:
+                            # Replace worst individuals, carrying the migrant's
+                            # real fitness across (fitness is genome-intrinsic).
                             worst_idx = np.argmin(island_fitness[dest])
                             islands[dest][worst_idx] = migrant
-                            island_fitness[dest][worst_idx] = 0.0  # Will be re-evaluated
+                            island_fitness[dest][worst_idx] = migrant_fitness
 
                 # Track best
                 for island, fitness in zip(islands, island_fitness):

@@ -9,6 +9,7 @@ from parga import (
     IslandModel,
     MigrationTopology,
     MutationMethod,
+    ParallelIslandModel,
     SelectionMethod,
     ackley,
     is_free_threaded,
@@ -22,6 +23,11 @@ from parga import (
 def simple_fitness(genes: np.ndarray) -> float:
     """Simple fitness function: negative sum of squares."""
     return -np.sum(genes**2)
+
+
+def strictly_negative_fitness(genes: np.ndarray) -> float:
+    """Fitness that is always strictly negative (bounded above by -1.0)."""
+    return -(np.sum(genes**2) + 1.0)
 
 
 class TestGeneticAlgorithm:
@@ -183,6 +189,40 @@ class TestIslandModel:
             )
             result = island_ga.run()
             assert result.best_fitness is not None
+
+    def test_parallel_island_migration_preserves_fitness(self):
+        """Migration must carry each migrant's real fitness, not a 0.0 placeholder.
+
+        ParGA maximizes and this objective is strictly negative, so a spurious
+        0.0 placeholder would beat every real individual and corrupt both the
+        reported best_fitness and the next generation's selection/elitism.
+        Regression test for the pre-fix behavior where migrants were assigned
+        island_fitness = 0.0.
+        """
+        with pytest.warns(DeprecationWarning):
+            model = ParallelIslandModel(
+                fitness_fn=strictly_negative_fitness,
+                genome_length=4,
+                num_islands=3,
+                island_population=20,
+                generations=12,
+                migration_interval=5,
+                migration_count=3,
+                n_workers=2,
+                seed=42,
+                lower_bounds=[-5.0] * 4,
+                upper_bounds=[5.0] * 4,
+            )
+        result = model.run()
+
+        # The true optimum of this objective is strictly negative, so the
+        # reported best must never be the fabricated 0.0 placeholder.
+        assert result.best_fitness is not None
+        assert result.best_fitness < 0.0
+        # The reported genome must actually evaluate to the reported fitness.
+        assert result.best_fitness == pytest.approx(
+            strictly_negative_fitness(np.asarray(result.best_genes()))
+        )
 
     def test_operators(self):
         """Test setting operators on island model."""
