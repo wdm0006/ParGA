@@ -580,16 +580,19 @@ class ParallelIslandModel:
                             best_indices = np.argpartition(-fitness_arr, mc)[: mc]
                         else:
                             best_indices = np.argsort(-fitness_arr)[: mc]
-                        migrants.append([islands[i][j].copy() for j in best_indices])
+                        migrants.append(
+                            [(islands[i][j].copy(), island_fitness[i][j]) for j in best_indices]
+                        )
 
                     # Send migrants to next island
                     for i in range(self.num_islands):
                         dest = (i + 1) % self.num_islands
-                        for migrant in migrants[i]:
-                            # Replace worst individuals
+                        for migrant, migrant_fitness in migrants[i]:
+                            # Replace worst individuals, carrying the migrant's
+                            # real fitness across (fitness is genome-intrinsic).
                             worst_idx = np.argmin(island_fitness[dest])
                             islands[dest][worst_idx] = migrant
-                            island_fitness[dest][worst_idx] = 0.0  # Will be re-evaluated
+                            island_fitness[dest][worst_idx] = migrant_fitness
 
                 # Track best
                 for island, fitness in zip(islands, island_fitness):
