@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from parga import (
+    GA,
     CrossoverMethod,
     GeneticAlgorithm,
     IslandModel,
@@ -13,6 +14,8 @@ from parga import (
     SelectionMethod,
     ackley,
     is_free_threaded,
+    maximize,
+    minimize,
     rastrigin,
     rosenbrock,
     set_num_threads,
@@ -28,6 +31,16 @@ def simple_fitness(genes: np.ndarray) -> float:
 def strictly_negative_fitness(genes: np.ndarray) -> float:
     """Fitness that is always strictly negative (bounded above by -1.0)."""
     return -(np.sum(genes**2) + 1.0)
+
+
+def sphere_objective(genes: np.ndarray) -> float:
+    """Sphere function to MINIMIZE: sum of squares, optimum 0 at the origin."""
+    return float(np.sum(genes**2))
+
+
+def neg_sphere_objective(genes: np.ndarray) -> float:
+    """Negated sphere to MAXIMIZE: optimum 0 at the origin."""
+    return float(-np.sum(genes**2))
 
 
 class TestGeneticAlgorithm:
@@ -469,3 +482,134 @@ class TestFreeThreadedUtils:
         """set_num_threads(0) raises ValueError."""
         with pytest.raises(ValueError):
             set_num_threads(0)
+
+
+class TestFacade:
+    """Tests for the high-level GA / minimize / maximize facade.
+
+    These exercise the deterministic ``parallel=False`` Rust paths so they
+    never depend on fitness-timing measurement and never flake.
+    """
+
+    def test_scalar_bounds_parse_and_run(self):
+        """Scalar (lower, upper) bounds parse and produce genes within range."""
+        result = GA(
+            simple_fitness,
+            genome_length=4,
+            population_size=30,
+            generations=20,
+            bounds=(-5, 5),
+            parallel=False,
+            seed=42,
+        ).run()
+        genes = result.best_genes()
+        assert len(genes) == 4
+        assert np.all(genes >= -5.0)
+        assert np.all(genes <= 5.0)
+
+    def test_per_gene_bounds_parse_and_run(self):
+        """Per-gene ([lowers], [uppers]) bounds parse and are respected."""
+        lowers = [-1.0, -2.0, -3.0]
+        uppers = [1.0, 2.0, 3.0]
+        result = GA(
+            simple_fitness,
+            genome_length=3,
+            population_size=30,
+            generations=20,
+            bounds=(lowers, uppers),
+            parallel=False,
+            seed=42,
+        ).run()
+        genes = result.best_genes()
+        assert len(genes) == 3
+        assert np.all(genes >= np.array(lowers))
+        assert np.all(genes <= np.array(uppers))
+
+    def test_minimize_converges_near_zero(self):
+        """minimize(sphere) converges near the origin; -best_fitness ~ true min."""
+        result = minimize(
+            sphere_objective,
+            genome_length=3,
+            bounds=(-5, 5),
+            population_size=60,
+            generations=80,
+            parallel=False,
+            seed=7,
+        )
+        # minimize negates internally, so best_fitness is the negated objective;
+        # the true minimum value is -result.best_fitness and should be ~0.
+        assert -result.best_fitness == pytest.approx(0.0, abs=0.1)
+        assert np.allclose(result.best_genes(), 0.0, atol=0.5)
+
+    def test_maximize_converges_near_zero(self):
+        """maximize(neg_sphere) mirrors minimize: best_fitness ~ 0 at the origin."""
+        result = maximize(
+            neg_sphere_objective,
+            genome_length=3,
+            bounds=(-5, 5),
+            population_size=60,
+            generations=80,
+            parallel=False,
+            seed=7,
+        )
+        assert result.best_fitness == pytest.approx(0.0, abs=0.1)
+        assert np.allclose(result.best_genes(), 0.0, atol=0.5)
+
+    def test_strategy_is_rust(self):
+        """parallel=False single-population selects the deterministic rust path."""
+        result = GA(
+            simple_fitness,
+            genome_length=4,
+            population_size=30,
+            generations=10,
+            parallel=False,
+            seed=42,
+        ).run()
+        assert result.strategy == "rust"
+
+    def test_strategy_is_rust_island(self):
+        """parallel=False with islands>1 selects the rust_island path."""
+        result = GA(
+            simple_fitness,
+            genome_length=4,
+            population_size=40,
+            generations=10,
+            islands=2,
+            parallel=False,
+            seed=42,
+        ).run()
+        assert result.strategy == "rust_island"
+
+    def test_reproducibility_rust_path(self):
+        """Two rust-path runs with the same seed give bit-identical results."""
+
+        def run():
+            return GA(
+                simple_fitness,
+                genome_length=5,
+                population_size=40,
+                generations=25,
+                parallel=False,
+                seed=98765,
+            ).run()
+
+        r1 = run()
+        r2 = run()
+        assert r1.best_fitness == r2.best_fitness
+        np.testing.assert_array_equal(r1.best_genes(), r2.best_genes())
+
+    def test_best_genes_returns_copy(self):
+        """GAResult.best_genes() returns a copy; mutating it is harmless."""
+        result = GA(
+            simple_fitness,
+            genome_length=4,
+            population_size=30,
+            generations=10,
+            parallel=False,
+            seed=42,
+        ).run()
+        genes = result.best_genes()
+        original = genes.copy()
+        genes[:] = 999.0
+        # A fresh call must still return the untouched best genome.
+        np.testing.assert_array_equal(result.best_genes(), original)
