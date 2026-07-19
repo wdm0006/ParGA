@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import time
+from numbers import Real
 from typing import Callable
 
 import numpy as np
@@ -37,6 +38,8 @@ from parga._parga import (
 )
 from parga._parga import is_free_threaded, set_num_threads
 from parga.parallel import ParallelGA, ParallelIslandModel
+
+from ._validation import validate_ga_config, validate_island_config
 
 
 class GAResult:
@@ -164,14 +167,44 @@ class GA:
         if bounds is None:
             self.lower_bounds = [-10.0] * genome_length
             self.upper_bounds = [10.0] * genome_length
-        elif isinstance(bounds[0], (int, float)):
+        elif not isinstance(bounds, (tuple, list)) or len(bounds) != 2:
+            raise ValueError("bounds must be a (lower, upper) pair")
+        elif isinstance(bounds[0], Real) and isinstance(bounds[1], Real):
             # Single (lower, upper) for all genes
             self.lower_bounds = [float(bounds[0])] * genome_length
             self.upper_bounds = [float(bounds[1])] * genome_length
         else:
             # Per-gene bounds
-            self.lower_bounds = list(bounds[0])
-            self.upper_bounds = list(bounds[1])
+            try:
+                self.lower_bounds = [float(value) for value in bounds[0]]
+                self.upper_bounds = [float(value) for value in bounds[1]]
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "bounds must contain numeric lower and upper values"
+                ) from error
+
+        validation_args = {
+            "genome_length": genome_length,
+            "elitism": elitism,
+            "tournament_size": tournament_size,
+            "mutation_rate": mutation_rate,
+            "crossover_rate": crossover_rate,
+            "lower_bounds": self.lower_bounds,
+            "upper_bounds": self.upper_bounds,
+            "mutation_rate_end": mutation_rate_end,
+            "random_immigrants": random_immigrants,
+        }
+        validate_ga_config(population_size=population_size, **validation_args)
+        if islands <= 0:
+            raise ValueError("islands must be greater than zero")
+        if islands > 1:
+            validate_island_config(
+                num_islands=islands,
+                island_population=population_size // islands,
+                migration_interval=migration_interval,
+                migration_count=migration_count,
+                **validation_args,
+            )
 
         # Operator overrides
         self.crossover_method = crossover_method

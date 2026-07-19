@@ -36,7 +36,7 @@ fn main() {
     println!("Migration every {} generations\n", 20);
 
     // Create and run the island model
-    let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness);
+    let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness).unwrap();
     let result = model.run();
 
     // Print results
@@ -89,7 +89,7 @@ fn main() {
             .build()
             .unwrap();
 
-        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Rastrigin);
+        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Rastrigin).unwrap();
         let result = model.run();
 
         println!("{:20} Best fitness: {:.6}", name, result.best_fitness);

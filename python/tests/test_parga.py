@@ -78,6 +78,24 @@ class TestGeneticAlgorithm:
         # Best genes should be within bounds (close to 0 for sphere)
         assert all(-1.5 <= g <= 1.5 for g in genes)
 
+    @pytest.mark.parametrize(
+        "kwargs, message",
+        [
+            ({"population_size": 0}, "population size"),
+            ({"genome_length": 0}, "genome_length"),
+            ({"population_size": 2, "elitism": 3}, "elitism"),
+            ({"population_size": 2, "tournament_size": 3}, "tournament_size"),
+            ({"mutation_rate": 1.1}, "mutation_rate"),
+            ({"lower_bounds": [0.0], "upper_bounds": [1.0, 1.0]}, "upper_bounds"),
+            ({"lower_bounds": [2.0], "upper_bounds": [1.0]}, "lower bound"),
+        ],
+    )
+    def test_invalid_config_is_value_error(self, kwargs, message):
+        base = {"fitness_fn": simple_fitness, "genome_length": 1}
+        base.update(kwargs)
+        with pytest.raises(ValueError, match=message):
+            GeneticAlgorithm(**base)
+
     def test_selection_methods(self):
         """Test different selection methods."""
         methods = [
@@ -161,6 +179,35 @@ class TestGeneticAlgorithm:
 
 class TestIslandModel:
     """Tests for the IslandModel class."""
+
+    @pytest.mark.parametrize(
+        "kwargs, message",
+        [
+            ({"migration_interval": 0}, "migration_interval"),
+            (
+                {"num_islands": 1, "topology": MigrationTopology.random()},
+                "num_islands",
+            ),
+            (
+                {
+                    "island_population": 2,
+                    "tournament_size": 2,
+                    "migration_count": 3,
+                },
+                "migration_count",
+            ),
+            ({"island_population": 2, "elitism": 3}, "elitism"),
+        ],
+    )
+    def test_invalid_config_is_value_error(self, kwargs, message):
+        base = {
+            "fitness_fn": simple_fitness,
+            "genome_length": 1,
+            "num_islands": 2,
+        }
+        base.update(kwargs)
+        with pytest.raises(ValueError, match=message):
+            IslandModel(**base)
 
     def test_basic_island_model(self):
         """Test basic island model execution."""
@@ -490,6 +537,29 @@ class TestFacade:
     These exercise the deterministic ``parallel=False`` Rust paths so they
     never depend on fitness-timing measurement and never flake.
     """
+
+    @pytest.mark.parametrize("parallel", [False, True])
+    def test_invalid_serial_config_is_backend_independent(self, parallel):
+        with pytest.raises(ValueError, match="elitism"):
+            GA(
+                simple_fitness,
+                genome_length=2,
+                population_size=2,
+                elitism=3,
+                parallel=parallel,
+            )
+
+    @pytest.mark.parametrize("parallel", [False, True])
+    def test_invalid_island_config_is_backend_independent(self, parallel):
+        with pytest.raises(ValueError, match="migration_interval"):
+            GA(
+                simple_fitness,
+                genome_length=2,
+                population_size=8,
+                islands=2,
+                migration_interval=0,
+                parallel=parallel,
+            )
 
     def test_scalar_bounds_parse_and_run(self):
         """Scalar (lower, upper) bounds parse and produce genes within range."""

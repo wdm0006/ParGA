@@ -27,7 +27,7 @@ fn main() {
     let fitness = Sphere;
 
     // Create and run the genetic algorithm
-    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness);
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness).unwrap();
     let result = ga.run();
 
     // Print results

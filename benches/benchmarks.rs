@@ -24,7 +24,7 @@ fn benchmark_ga_sphere(c: &mut Criterion) {
 
                     let fitness = Sphere;
                     let mut ga: GeneticAlgorithm<RealGenome, _> =
-                        GeneticAlgorithm::new(config, fitness);
+                        GeneticAlgorithm::new(config, fitness).unwrap();
                     black_box(ga.run())
                 });
             },
@@ -50,7 +50,7 @@ fn benchmark_ga_dimensions(c: &mut Criterion) {
 
                 let fitness = Sphere;
                 let mut ga: GeneticAlgorithm<RealGenome, _> =
-                    GeneticAlgorithm::new(config, fitness);
+                    GeneticAlgorithm::new(config, fitness).unwrap();
                 black_box(ga.run())
             });
         });
@@ -79,7 +79,8 @@ fn benchmark_island_model(c: &mut Criterion) {
                         .unwrap();
 
                     let fitness = Sphere;
-                    let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness);
+                    let mut model: IslandModel<RealGenome, _> =
+                        IslandModel::new(config, fitness).unwrap();
                     black_box(model.run())
                 });
             },
@@ -112,7 +113,9 @@ fn benchmark_selection_methods(c: &mut Criterion) {
 
                 let fitness = Sphere;
                 let mut ga: GeneticAlgorithm<RealGenome, _> =
-                    GeneticAlgorithm::new(config, fitness).with_selection(*method);
+                    GeneticAlgorithm::new(config, fitness)
+                        .unwrap()
+                        .with_selection(*method);
                 black_box(ga.run())
             });
         });
@@ -171,7 +174,8 @@ fn benchmark_migration_topologies(c: &mut Criterion) {
                     .unwrap();
 
                 let fitness = Sphere;
-                let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness);
+                let mut model: IslandModel<RealGenome, _> =
+                    IslandModel::new(config, fitness).unwrap();
                 black_box(model.run())
             });
         });

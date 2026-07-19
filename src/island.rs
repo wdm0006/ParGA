@@ -102,6 +102,39 @@ impl IslandConfig {
             .unwrap_or_else(|| vec![10.0; self.genome_length]);
         (lower, upper)
     }
+
+    /// Validates that this configuration can be executed safely.
+    ///
+    /// # Errors
+    /// Returns a configuration error when any semantic invariant is violated.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.num_islands < 2 {
+            return Err(crate::Error::Config(
+                "num_islands must be at least 2 for migration".into(),
+            ));
+        }
+        crate::validation::validate_common(
+            self.island_population,
+            self.genome_length,
+            self.elitism,
+            self.tournament_size,
+            self.mutation_rate,
+            self.crossover_rate,
+            self.lower_bounds.as_deref(),
+            self.upper_bounds.as_deref(),
+        )?;
+        if self.migration_interval == 0 {
+            return Err(crate::Error::Config(
+                "migration_interval must be greater than zero".into(),
+            ));
+        }
+        if self.migration_count == 0 || self.migration_count > self.island_population {
+            return Err(crate::Error::Config(
+                "migration_count must be between 1 and island_population".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Migration topology between islands.
@@ -209,7 +242,11 @@ where
     MutationOperator<G>: Mutation<G>,
 {
     /// Creates a new island model.
-    pub fn new(config: IslandConfig, fitness_fn: F) -> Self {
+    ///
+    /// # Errors
+    /// Returns a configuration error when `config` cannot be executed safely.
+    pub fn new(config: IslandConfig, fitness_fn: F) -> crate::Result<Self> {
+        config.validate()?;
         let mut rng = rng::create_rng(config.seed);
         let (lower, upper) = config.bounds();
 
@@ -222,7 +259,7 @@ where
             .collect();
         let migration_rng = StdRng::seed_from_u64(rng.gen());
 
-        Self {
+        Ok(Self {
             selection: SelectionOperator::Tournament(config.tournament_size),
             crossover: CrossoverOperator::default(),
             mutation: MutationOperator::default(),
@@ -233,7 +270,7 @@ where
             fitness_history: Vec::new(),
             island_rngs,
             migration_rng,
-        }
+        })
     }
 
     /// Sets the selection operator.
@@ -741,7 +778,8 @@ mod tests {
             .unwrap();
 
         let fitness = Sphere;
-        let mut island_model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness);
+        let mut island_model: IslandModel<RealGenome, _> =
+            IslandModel::new(config, fitness).unwrap();
 
         let result = island_model.run();
 
@@ -759,11 +797,12 @@ mod tests {
             .generations(1)
             .genome_length(1)
             .elitism(2)
+            .tournament_size(2)
             .seed(42)
             .build()
             .unwrap();
 
-        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere);
+        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere).unwrap();
         model.islands = vec![
             Population::from_individuals(vec![
                 Individual::new(RealGenome::new(vec![0.0])),
@@ -800,7 +839,8 @@ mod tests {
         }
         let config = builder.build().unwrap();
 
-        let mut island_model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere);
+        let mut island_model: IslandModel<RealGenome, _> =
+            IslandModel::new(config, Sphere).unwrap();
         island_model.run()
     }
 
@@ -833,7 +873,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere);
+        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere).unwrap();
         model.islands = (0..4)
             .map(|island| {
                 let individuals = (0..3)
