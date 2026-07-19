@@ -32,6 +32,8 @@ from typing import Callable
 import cloudpickle
 import numpy as np
 
+from ._validation import validate_ga_config, validate_island_config
+
 
 _worker_fitness_fn = None
 
@@ -137,16 +139,25 @@ class ParallelGA:
         self.crossover_rate = crossover_rate
         self.elitism = elitism
         self.tournament_size = tournament_size
-        self.lower_bounds = lower_bounds or [-10.0] * genome_length
-        self.upper_bounds = upper_bounds or [10.0] * genome_length
+        self.lower_bounds = (
+            lower_bounds if lower_bounds is not None else [-10.0] * genome_length
+        )
+        self.upper_bounds = (
+            upper_bounds if upper_bounds is not None else [10.0] * genome_length
+        )
         self.seed = seed
         self.chunk_size = chunk_size or max(1, population_size // (self.n_workers * 2))
 
-        # Validate
-        if len(self.lower_bounds) != genome_length:
-            raise ValueError("lower_bounds length must match genome_length")
-        if len(self.upper_bounds) != genome_length:
-            raise ValueError("upper_bounds length must match genome_length")
+        validate_ga_config(
+            genome_length=genome_length,
+            population_size=population_size,
+            elitism=elitism,
+            tournament_size=tournament_size,
+            mutation_rate=mutation_rate,
+            crossover_rate=crossover_rate,
+            lower_bounds=self.lower_bounds,
+            upper_bounds=self.upper_bounds,
+        )
 
     def _create_random_population(self, rng: np.random.Generator) -> list[np.ndarray]:
         """Create initial random population."""
@@ -427,9 +438,27 @@ class ParallelIslandModel:
         self.crossover_rate = crossover_rate
         self.elitism = elitism
         self.tournament_size = tournament_size
-        self.lower_bounds = lower_bounds or [-10.0] * genome_length
-        self.upper_bounds = upper_bounds or [10.0] * genome_length
+        self.lower_bounds = (
+            lower_bounds if lower_bounds is not None else [-10.0] * genome_length
+        )
+        self.upper_bounds = (
+            upper_bounds if upper_bounds is not None else [10.0] * genome_length
+        )
         self.seed = seed
+
+        validate_island_config(
+            genome_length=genome_length,
+            num_islands=num_islands,
+            island_population=island_population,
+            migration_interval=migration_interval,
+            migration_count=migration_count,
+            elitism=elitism,
+            tournament_size=tournament_size,
+            mutation_rate=mutation_rate,
+            crossover_rate=crossover_rate,
+            lower_bounds=self.lower_bounds,
+            upper_bounds=self.upper_bounds,
+        )
 
     def run(self) -> ParallelGAResult:
         """Run the island model with parallel fitness evaluation."""

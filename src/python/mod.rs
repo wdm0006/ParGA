@@ -558,6 +558,9 @@ impl PyGeneticAlgorithm {
         let config = builder
             .build()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        config
+            .validate()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         Ok(Self {
             config,
@@ -591,7 +594,7 @@ impl PyGeneticAlgorithm {
         // Allow other Python threads to run during evolution
         let result = py.allow_threads(|| {
             let mut ga: GeneticAlgorithm<RealGenome, PyFitness> =
-                GeneticAlgorithm::new(self.config.clone(), fitness);
+                GeneticAlgorithm::new(self.config.clone(), fitness).unwrap();
 
             if let Some(selection) = self.selection {
                 ga = ga.with_selection(selection);
@@ -711,6 +714,9 @@ impl PyIslandModel {
         let config = builder
             .build()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        config
+            .validate()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         Ok(Self {
             config,
@@ -743,7 +749,7 @@ impl PyIslandModel {
 
         let result = py.allow_threads(|| {
             let mut model: IslandModel<RealGenome, PyFitness> =
-                IslandModel::new(self.config.clone(), fitness);
+                IslandModel::new(self.config.clone(), fitness).unwrap();
 
             if let Some(selection) = self.selection {
                 model = model.with_selection(selection);

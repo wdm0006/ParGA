@@ -14,7 +14,7 @@ fn test_simple_optimization() {
         .unwrap();
 
     let fitness = Sphere;
-    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness);
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness).unwrap();
     let result = ga.run();
 
     // Should find a solution close to zero
@@ -35,7 +35,7 @@ fn test_rastrigin_optimization() {
         .unwrap();
 
     let fitness = Rastrigin;
-    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness);
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness).unwrap();
     let result = ga.run();
 
     // Should find a reasonable solution (Rastrigin is harder)
@@ -56,7 +56,7 @@ fn test_island_model_basic() {
         .unwrap();
 
     let fitness = Sphere;
-    let mut island_model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness);
+    let mut island_model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness).unwrap();
     let result = island_model.run();
 
     // Island model should find a reasonable solution for Sphere
@@ -87,7 +87,7 @@ fn test_island_model_topologies() {
             .unwrap();
 
         let fitness = Sphere;
-        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness);
+        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, fitness).unwrap();
         let result = model.run();
 
         assert!(
@@ -119,8 +119,9 @@ fn test_selection_methods() {
             .unwrap();
 
         let fitness = Sphere;
-        let mut ga: GeneticAlgorithm<RealGenome, _> =
-            GeneticAlgorithm::new(config, fitness).with_selection(method);
+        let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness)
+            .unwrap()
+            .with_selection(method);
         let result = ga.run();
 
         assert!(
@@ -128,6 +129,88 @@ fn test_selection_methods() {
             "Selection {:?} failed",
             method
         );
+    }
+}
+
+#[test]
+fn test_invalid_ga_configurations_are_rejected_at_construction() {
+    let cases = [
+        GaConfig::builder()
+            .population_size(2)
+            .genome_length(1)
+            .elitism(3)
+            .build()
+            .unwrap(),
+        GaConfig::builder().genome_length(0).build().unwrap(),
+        GaConfig::builder()
+            .population_size(2)
+            .genome_length(1)
+            .tournament_size(3)
+            .build()
+            .unwrap(),
+        GaConfig::builder()
+            .genome_length(1)
+            .mutation_rate(1.1)
+            .build()
+            .unwrap(),
+        GaConfig::builder()
+            .genome_length(2)
+            .lower_bounds(vec![0.0])
+            .upper_bounds(vec![1.0, 1.0])
+            .build()
+            .unwrap(),
+        GaConfig::builder()
+            .genome_length(1)
+            .lower_bounds(vec![2.0])
+            .upper_bounds(vec![1.0])
+            .build()
+            .unwrap(),
+    ];
+
+    for config in cases {
+        let error = GeneticAlgorithm::<RealGenome, _>::new(config, Sphere)
+            .err()
+            .unwrap();
+        assert!(error.to_string().starts_with("Configuration error:"));
+    }
+}
+
+#[test]
+fn test_invalid_island_configurations_are_rejected_at_construction() {
+    let cases = [
+        IslandConfig::builder()
+            .num_islands(2)
+            .genome_length(1)
+            .migration_interval(0)
+            .build()
+            .unwrap(),
+        IslandConfig::builder()
+            .num_islands(1)
+            .genome_length(1)
+            .topology(MigrationTopology::Random)
+            .build()
+            .unwrap(),
+        IslandConfig::builder()
+            .num_islands(2)
+            .island_population(2)
+            .genome_length(1)
+            .migration_count(3)
+            .build()
+            .unwrap(),
+        IslandConfig::builder()
+            .num_islands(2)
+            .island_population(2)
+            .genome_length(1)
+            .elitism(3)
+            .build()
+            .unwrap(),
+    ];
+
+    for config in cases {
+        let error = IslandModel::<RealGenome, _>::new(config, Sphere)
+            .err()
+            .unwrap();
+        assert!(error.to_string().starts_with("Configuration error:"));
     }
 }
 
@@ -149,7 +232,7 @@ fn test_custom_fitness_function() {
         .build()
         .unwrap();
 
-    let mut ga = GeneticAlgorithm::new(config, fitness);
+    let mut ga = GeneticAlgorithm::new(config, fitness).unwrap();
     let result = ga.run();
 
     // Best solution should have x[0], x[1] near 10 and x[2] near -10
@@ -169,7 +252,7 @@ fn test_convergence_detection() {
         .unwrap();
 
     let fitness = Sphere;
-    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness);
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness).unwrap();
     let result = ga.run();
 
     // With enough generations, should converge
@@ -191,10 +274,10 @@ fn test_reproducibility_with_seed() {
 
     let fitness = Sphere;
 
-    let mut ga1: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config1, fitness);
+    let mut ga1: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config1, fitness).unwrap();
     let result1 = ga1.run();
 
-    let mut ga2: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config2, fitness);
+    let mut ga2: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config2, fitness).unwrap();
     let result2 = ga2.run();
 
     // Results should be identical with the same seed
@@ -216,7 +299,7 @@ fn test_population_statistics() {
         .unwrap();
 
     let fitness = Sphere;
-    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness);
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness).unwrap();
     let result = ga.run();
 
     assert!(!result.fitness_history.is_empty());
@@ -236,7 +319,7 @@ fn test_booth_function() {
         .unwrap();
 
     let fitness = Booth;
-    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness);
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, fitness).unwrap();
     let result = ga.run();
 
     // Booth optimum is at (1, 3) with fitness 0

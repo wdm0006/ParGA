@@ -24,7 +24,7 @@
 //!     .unwrap();
 //!
 //! // Use the built-in Sphere benchmark (minimizes sum of squares)
-//! let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, Sphere);
+//! let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, Sphere).unwrap();
 //! let result = ga.run();
 //!
 //! println!("Best fitness: {}", result.best_fitness);
@@ -49,6 +49,7 @@ pub mod island;
 pub mod operators;
 pub mod population;
 pub mod rng;
+mod validation;
 
 #[cfg(feature = "python")]
 pub mod python;
@@ -155,6 +156,32 @@ impl GaConfig {
             .unwrap_or_else(|| vec![10.0; self.genome_length]);
         (lower, upper)
     }
+
+    /// Validates that this configuration can be executed safely.
+    ///
+    /// # Errors
+    /// Returns a configuration error when any semantic invariant is violated.
+    pub fn validate(&self) -> Result<()> {
+        validation::validate_common(
+            self.population_size,
+            self.genome_length,
+            self.elitism,
+            self.tournament_size,
+            self.mutation_rate,
+            self.crossover_rate,
+            self.lower_bounds.as_deref(),
+            self.upper_bounds.as_deref(),
+        )?;
+        if let Some(rate) = self.mutation_rate_end {
+            validation::validate_rate("mutation_rate_end", rate)?;
+        }
+        if self.random_immigrants.unwrap_or(0) > self.population_size {
+            return Err(Error::Config(
+                "random_immigrants must not exceed population_size".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Result of a genetic algorithm run.
@@ -200,12 +227,16 @@ where
     MutationOperator<G>: Mutation<G>,
 {
     /// Creates a new genetic algorithm instance.
-    pub fn new(config: GaConfig, fitness_fn: F) -> Self {
+    ///
+    /// # Errors
+    /// Returns a configuration error when `config` cannot be executed safely.
+    pub fn new(config: GaConfig, fitness_fn: F) -> Result<Self> {
+        config.validate()?;
         let mut rng = rng::create_rng(config.seed);
         let (lower, upper) = config.bounds();
         let population = Population::random(&mut rng, config.population_size, &lower, &upper);
 
-        Self {
+        Ok(Self {
             selection: SelectionOperator::Tournament(config.tournament_size),
             crossover: CrossoverOperator::default(),
             mutation: MutationOperator::default(),
@@ -217,10 +248,13 @@ where
             generation: 0,
             fitness_history: Vec::new(),
             rng,
-        }
+        })
     }
 
     /// Creates a genetic algorithm with custom operators.
+    ///
+    /// # Errors
+    /// Returns a configuration error when `config` cannot be executed safely.
     pub fn with_operators(
         config: GaConfig,
         fitness_fn: F,
@@ -228,10 +262,14 @@ where
         selection: SelectionOperator,
         crossover: CrossoverOperator<G>,
         mutation: MutationOperator<G>,
-    ) -> Self {
+    ) -> Result<Self> {
+        config.validate()?;
+        if population.is_empty() {
+            return Err(Error::Config("population must not be empty".into()));
+        }
         let rng = rng::create_rng(config.seed);
         let (lower, upper) = config.bounds();
-        Self {
+        Ok(Self {
             config,
             population,
             fitness_fn,
@@ -243,7 +281,7 @@ where
             cached_lower: lower,
             cached_upper: upper,
             rng,
-        }
+        })
     }
 
     /// Sets the selection operator.
