@@ -788,7 +788,7 @@ impl PyIslandModel {
 /// Sphere function (minimize sum of squares).
 #[pyfunction]
 fn sphere(x: PyReadonlyArray1<'_, f64>) -> f64 {
-    let genes = x.as_slice().unwrap();
+    let genes = x.as_array();
     -genes.iter().map(|v| v * v).sum::<f64>()
 }
 
@@ -796,7 +796,7 @@ fn sphere(x: PyReadonlyArray1<'_, f64>) -> f64 {
 #[pyfunction]
 fn rastrigin(x: PyReadonlyArray1<'_, f64>) -> f64 {
     use std::f64::consts::PI;
-    let genes = x.as_slice().unwrap();
+    let genes = x.as_array();
     let n = genes.len() as f64;
     let sum: f64 = genes
         .iter()
@@ -808,13 +808,14 @@ fn rastrigin(x: PyReadonlyArray1<'_, f64>) -> f64 {
 /// Rosenbrock function.
 #[pyfunction]
 fn rosenbrock(x: PyReadonlyArray1<'_, f64>) -> f64 {
-    let genes = x.as_slice().unwrap();
+    let genes = x.as_array();
     if genes.len() < 2 {
         return 0.0;
     }
     let sum: f64 = genes
-        .windows(2)
-        .map(|w| 100.0 * (w[1] - w[0] * w[0]).powi(2) + (1.0 - w[0]).powi(2))
+        .iter()
+        .zip(genes.iter().skip(1))
+        .map(|(&a, &b)| 100.0 * (b - a * a).powi(2) + (1.0 - a).powi(2))
         .sum();
     -sum
 }
@@ -823,7 +824,7 @@ fn rosenbrock(x: PyReadonlyArray1<'_, f64>) -> f64 {
 #[pyfunction]
 fn ackley(x: PyReadonlyArray1<'_, f64>) -> f64 {
     use std::f64::consts::{E, PI};
-    let genes = x.as_slice().unwrap();
+    let genes = x.as_array();
     let n = genes.len() as f64;
     if n == 0.0 {
         return 0.0;
@@ -838,7 +839,7 @@ fn ackley(x: PyReadonlyArray1<'_, f64>) -> f64 {
 /// Griewank function.
 #[pyfunction]
 fn griewank(x: PyReadonlyArray1<'_, f64>) -> f64 {
-    let genes = x.as_slice().unwrap();
+    let genes = x.as_array();
     let sum: f64 = genes.iter().map(|v| v * v / 4000.0).sum();
     let prod: f64 = genes
         .iter()
@@ -851,7 +852,7 @@ fn griewank(x: PyReadonlyArray1<'_, f64>) -> f64 {
 /// Schwefel function.
 #[pyfunction]
 fn schwefel(x: PyReadonlyArray1<'_, f64>) -> f64 {
-    let genes = x.as_slice().unwrap();
+    let genes = x.as_array();
     let n = genes.len() as f64;
     let sum: f64 = genes.iter().map(|&v| v * v.abs().sqrt().sin()).sum();
     -(418.9829 * n - sum)

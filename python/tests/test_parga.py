@@ -13,11 +13,13 @@ from parga import (
     ParallelIslandModel,
     SelectionMethod,
     ackley,
+    griewank,
     is_free_threaded,
     maximize,
     minimize,
     rastrigin,
     rosenbrock,
+    schwefel,
     set_num_threads,
     sphere,
 )
@@ -331,6 +333,16 @@ class TestBenchmarkFunctions:
         """Test ackley function at origin."""
         x = np.array([0.0, 0.0])
         assert abs(ackley(x)) < 1e-10
+
+    @pytest.mark.parametrize(
+        "benchmark_fn", [sphere, rastrigin, rosenbrock, ackley, griewank, schwefel]
+    )
+    def test_strided_view_matches_contiguous_copy(self, benchmark_fn):
+        """Benchmark functions accept strided arrays without changing results."""
+        strided = np.arange(8.0)[::2]
+        assert not strided.flags.c_contiguous
+
+        assert benchmark_fn(strided) == pytest.approx(benchmark_fn(strided.copy()))
 
 
 class TestOptimization:
