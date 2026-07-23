@@ -2,6 +2,18 @@
 
 use parga::prelude::*;
 
+fn assert_valid_result(result: &GaResult<RealGenome>) {
+    assert!(result.best_fitness.is_finite());
+    assert!(!result.fitness_history.is_empty());
+    assert!(
+        result
+            .fitness_history
+            .windows(2)
+            .all(|pair| pair[1] >= pair[0]),
+        "elitism should preserve the best fitness"
+    );
+}
+
 #[test]
 fn test_simple_optimization() {
     let config = GaConfig::builder()
@@ -258,6 +270,101 @@ fn test_convergence_detection() {
     // With enough generations, should converge
     // Note: convergence depends on the random seed
     assert!(!result.fitness_history.is_empty());
+}
+
+#[test]
+fn test_early_stopping_shortens_run() {
+    let configured_generations = 50;
+    let config = GaConfig::builder()
+        .population_size(10)
+        .genome_length(3)
+        .generations(configured_generations)
+        .elitism(10)
+        .early_stopping(1)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, Sphere).unwrap();
+    let result = ga.run();
+
+    assert_valid_result(&result);
+    assert!(result.generations < configured_generations);
+}
+
+#[test]
+fn test_restart_on_stagnation_completes_configured_run() {
+    let configured_generations = 6;
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(3)
+        .generations(configured_generations)
+        .elitism(2)
+        .mutation_rate(0.0)
+        .crossover_rate(0.0)
+        .early_stopping(1)
+        .restart_on_stagnation(1)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, Sphere).unwrap();
+    let result = ga.run();
+
+    assert_valid_result(&result);
+    assert_eq!(result.generations, configured_generations);
+}
+
+#[test]
+fn test_local_search_completes_with_valid_history() {
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(3)
+        .generations(6)
+        .local_search_iters(5)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, Rastrigin).unwrap();
+    let result = ga.run();
+
+    assert_valid_result(&result);
+}
+
+#[test]
+fn test_mutation_rate_decay_completes_with_valid_history() {
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(3)
+        .generations(6)
+        .mutation_rate(0.2)
+        .mutation_rate_end(0.0)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, Sphere).unwrap();
+    let result = ga.run();
+
+    assert_valid_result(&result);
+}
+
+#[test]
+fn test_random_immigrants_complete_with_valid_history() {
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(3)
+        .generations(6)
+        .random_immigrants(5)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, Rastrigin).unwrap();
+    let result = ga.run();
+
+    assert_valid_result(&result);
 }
 
 #[test]
