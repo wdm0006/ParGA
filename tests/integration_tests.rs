@@ -1,6 +1,10 @@
 //! Integration tests for the parga library.
 
 use parga::prelude::*;
+use parga::{
+    fitness::fitness_fn,
+    operators::crossover::{CrossoverOperator, RealCrossover},
+};
 
 fn assert_valid_result(result: &GaResult<RealGenome>) {
     assert!(result.best_fitness.is_finite());
@@ -52,6 +56,83 @@ fn test_rastrigin_optimization() {
 
     // Should find a reasonable solution (Rastrigin is harder)
     assert!(result.best_fitness > -10.0);
+}
+
+#[test]
+fn test_real_crossover_offspring_stay_within_bounds() {
+    let crossovers = [
+        RealCrossover::Blend(0.5),
+        RealCrossover::SimulatedBinary(2.0),
+    ];
+
+    for crossover in crossovers {
+        let config = GaConfig::builder()
+            .population_size(50)
+            .genome_length(4)
+            .generations(30)
+            .mutation_rate(0.0)
+            .crossover_rate(1.0)
+            .elitism(0)
+            .lower_bounds(vec![-0.01; 4])
+            .upper_bounds(vec![0.01; 4])
+            .seed(42)
+            .build()
+            .unwrap();
+
+        let fitness =
+            fitness_fn(|genome: &RealGenome| genome.genes().iter().map(|gene| gene.abs()).sum());
+        let mut ga = GeneticAlgorithm::new(config, fitness)
+            .unwrap()
+            .with_crossover(CrossoverOperator::Real(crossover));
+        let result = ga.run();
+
+        assert!(
+            result
+                .best_individual
+                .genome
+                .genes()
+                .iter()
+                .all(|gene| (-0.01..=0.01).contains(gene)),
+            "{crossover:?} produced an out-of-bounds best genome: {:?}",
+            result.best_individual.genome.genes()
+        );
+    }
+}
+
+#[test]
+fn test_island_real_crossover_offspring_stay_within_bounds() {
+    let config = IslandConfig::builder()
+        .num_islands(2)
+        .island_population(30)
+        .genome_length(4)
+        .generations(20)
+        .mutation_rate(0.0)
+        .crossover_rate(1.0)
+        .elitism(0)
+        .lower_bounds(vec![-0.01; 4])
+        .upper_bounds(vec![0.01; 4])
+        .migration_interval(20)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    let fitness =
+        fitness_fn(|genome: &RealGenome| genome.genes().iter().map(|gene| gene.abs()).sum());
+    let mut model = IslandModel::new(config, fitness)
+        .unwrap()
+        .with_crossover(CrossoverOperator::Real(RealCrossover::Blend(0.5)));
+    let result = model.run();
+
+    assert!(
+        result
+            .best_individual
+            .genome
+            .genes()
+            .iter()
+            .all(|gene| (-0.01..=0.01).contains(gene)),
+        "island crossover produced an out-of-bounds best genome: {:?}",
+        result.best_individual.genome.genes()
+    );
 }
 
 #[test]

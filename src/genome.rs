@@ -31,6 +31,9 @@ pub trait Genome: Clone + Debug + Send + Sync + Default + 'static {
 
     /// Creates a genome from a vector of f64 values.
     fn from_f64_vec(values: Vec<f64>) -> Self;
+
+    /// Clamps genes to the given bounds when the genome supports bounded values.
+    fn clamp_to_bounds(&mut self, _lower: &[f64], _upper: &[f64]) {}
 }
 
 /// Real-valued genome for continuous optimization.
@@ -101,6 +104,10 @@ impl Genome for RealGenome {
 
     fn from_f64_vec(values: Vec<f64>) -> Self {
         Self::new(values)
+    }
+
+    fn clamp_to_bounds(&mut self, lower: &[f64], upper: &[f64]) {
+        self.clamp(lower, upper);
     }
 }
 
