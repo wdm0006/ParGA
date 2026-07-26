@@ -189,7 +189,8 @@ impl Mutation<RealGenome> for RealMutation {
                             let val = 2.0 * u + (1.0 - 2.0 * u) * xy.powf(eta + 1.0);
                             val.max(0.0).powf(1.0 / (eta + 1.0)) - 1.0
                         } else {
-                            let xy = (1.0 - delta).max(0.0);
+                            // Deb's upper branch uses 1 - delta2, which equals delta.
+                            let xy = delta.max(0.0);
                             1.0 - (2.0 * (1.0 - u) + 2.0 * (u - 0.5) * xy.powf(eta + 1.0))
                                 .max(0.0)
                                 .powf(1.0 / (eta + 1.0))
@@ -343,6 +344,82 @@ mod tests {
         for (i, &g) in genome.genes().iter().enumerate() {
             assert!(g >= lower[i] && g <= upper[i]);
         }
+    }
+
+    #[test]
+    fn test_polynomial_mutation_symmetric_at_center() {
+        let (lo, hi) = (-1.0, 1.0);
+        let genes_per_round = 1000;
+        let rounds = 4;
+        let lower = vec![lo; genes_per_round];
+        let upper = vec![hi; genes_per_round];
+        let mut rng = crate::rng::create_rng(Some(11));
+
+        let mut sum = 0.0;
+        let mut up = 0usize;
+        let mut down = 0usize;
+        for _ in 0..rounds {
+            let mut genome = RealGenome::new(vec![0.0; genes_per_round]);
+            RealMutation::Polynomial(20.0).mutate(&mut genome, 1.0, &lower, &upper, &mut rng);
+            for &g in genome.genes() {
+                assert!((lo..=hi).contains(&g));
+                sum += g;
+                if g > 0.0 {
+                    up += 1;
+                } else if g < 0.0 {
+                    down += 1;
+                }
+            }
+        }
+
+        let samples = rounds * genes_per_round;
+        let mean = sum / samples as f64;
+        assert!(
+            mean.abs() < 0.02,
+            "mutation at the center of the bounds is biased: mean displacement {mean}"
+        );
+        assert!(
+            up > samples / 4 && down > samples / 4,
+            "expected both directions at the center: up={up} down={down}"
+        );
+    }
+
+    #[test]
+    fn test_polynomial_mutation_at_lower_bound_moves_inward() {
+        let (lo, hi) = (0.0, 1.0);
+        let eta = 20.0;
+        let genes_per_round = 500;
+        let rounds = 4;
+        let lower = vec![lo; genes_per_round];
+        let upper = vec![hi; genes_per_round];
+        let mut rng = crate::rng::create_rng(Some(7));
+
+        let mut total = 0.0;
+        let mut moved = 0usize;
+        for _ in 0..rounds {
+            let mut genome = RealGenome::new(vec![lo; genes_per_round]);
+            RealMutation::Polynomial(eta).mutate(&mut genome, 1.0, &lower, &upper, &mut rng);
+            for &g in genome.genes() {
+                assert!((lo..=hi).contains(&g));
+                total += g - lo;
+                if g - lo > 1e-9 {
+                    moved += 1;
+                }
+            }
+        }
+
+        // Deb's formula gives E[displacement] = range / (2 * (eta + 2)) here.
+        let samples = rounds * genes_per_round;
+        let mean = total / samples as f64;
+        let expected = (hi - lo) / (2.0 * (eta + 2.0));
+        assert!(
+            mean > expected / 2.0,
+            "gene on the lower bound is barely perturbed inward: mean {mean}, expected ~{expected}"
+        );
+        assert!(
+            moved > samples / 4,
+            "expected roughly half the genes to move inward, got {moved} of {samples}"
+        );
     }
 
     #[test]
