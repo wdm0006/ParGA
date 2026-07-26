@@ -316,6 +316,32 @@ fn test_restart_on_stagnation_completes_configured_run() {
 }
 
 #[test]
+fn test_restart_on_stagnation_records_one_history_entry_per_generation() {
+    let configured_generations = 8;
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(3)
+        .generations(configured_generations)
+        .elitism(2)
+        .mutation_rate(0.0)
+        .crossover_rate(0.0)
+        .restart_on_stagnation(1)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    let mut ga: GeneticAlgorithm<RealGenome, _> = GeneticAlgorithm::new(config, Sphere).unwrap();
+    let result = ga.run();
+
+    assert_valid_result(&result);
+    assert_eq!(
+        result.fitness_history.len(),
+        configured_generations + 1,
+        "one entry per generation plus the initial evaluation"
+    );
+}
+
+#[test]
 fn test_local_search_completes_with_valid_history() {
     let config = GaConfig::builder()
         .population_size(20)
