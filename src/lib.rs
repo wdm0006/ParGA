@@ -355,7 +355,14 @@ where
                             upper,
                         ));
                     }
-                    self.evaluate_population();
+                    self.score_population();
+                    // Refresh this generation's entry instead of appending a second one.
+                    if let Some(best) = self.population.best() {
+                        let best_fitness = best.fitness.unwrap_or(f64::NEG_INFINITY);
+                        if let Some(last) = self.fitness_history.last_mut() {
+                            *last = best_fitness;
+                        }
+                    }
                 }
             }
 
@@ -528,8 +535,21 @@ where
         }
     }
 
-    /// Evaluates fitness for all individuals in the population.
+    /// Evaluates fitness for all individuals in the population and records the
+    /// best fitness as this generation's `fitness_history` entry.
     fn evaluate_population(&mut self) {
+        self.score_population();
+
+        // Record best fitness
+        if let Some(best) = self.population.best() {
+            self.fitness_history
+                .push(best.fitness.unwrap_or(f64::NEG_INFINITY));
+        }
+    }
+
+    /// Evaluates fitness for all unevaluated individuals and re-sorts the
+    /// population, without touching `fitness_history`.
+    fn score_population(&mut self) {
         // Collect indices that need evaluation
         let unevaluated: Vec<usize> = self
             .population
@@ -557,12 +577,6 @@ where
 
         // Sort by fitness (descending - higher is better)
         self.population.sort_by_fitness();
-
-        // Record best fitness
-        if let Some(best) = self.population.best() {
-            self.fitness_history
-                .push(best.fitness.unwrap_or(f64::NEG_INFINITY));
-        }
     }
 
     /// Returns the current best individual.
