@@ -404,12 +404,15 @@ where
         let upper = &self.cached_upper;
         for chunk in parents.chunks(2) {
             if chunk.len() == 2 {
-                let (child1, child2) = if self.rng.gen::<f64>() < self.config.crossover_rate {
+                let (mut child1, mut child2) = if self.rng.gen::<f64>() < self.config.crossover_rate
+                {
                     self.crossover
                         .crossover(&chunk[0].genome, &chunk[1].genome, &mut self.rng)
                 } else {
                     (chunk[0].genome.clone(), chunk[1].genome.clone())
                 };
+                child1.clamp_to_bounds(lower, upper);
+                child2.clamp_to_bounds(lower, upper);
 
                 let mut ind1 = Individual::new(child1);
                 let mut ind2 = Individual::new(child2);

@@ -694,11 +694,13 @@ fn evolve_population<G>(
     // Crossover and mutation
     for chunk in parents.chunks(2) {
         if chunk.len() == 2 {
-            let (child1, child2) = if rng.gen::<f64>() < config.crossover_rate {
+            let (mut child1, mut child2) = if rng.gen::<f64>() < config.crossover_rate {
                 crossover.crossover(&chunk[0].genome, &chunk[1].genome, &mut *rng)
             } else {
                 (chunk[0].genome.clone(), chunk[1].genome.clone())
             };
+            child1.clamp_to_bounds(lower, upper);
+            child2.clamp_to_bounds(lower, upper);
 
             let mut ind1 = Individual::new(child1);
             let mut ind2 = Individual::new(child2);
