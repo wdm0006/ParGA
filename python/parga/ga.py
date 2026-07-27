@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import time
+import warnings
 from numbers import Real
 from typing import Callable
 
@@ -40,6 +41,23 @@ from parga._parga import is_free_threaded, set_num_threads
 from parga.parallel import ParallelGA, ParallelIslandModel
 
 from ._validation import validate_ga_config, validate_island_config
+
+#: Constructor options that only the Rust execution paths honor. The
+#: process-pool engines in ``parga.parallel`` use a fixed operator pipeline
+#: (tournament selection, blend crossover, Gaussian mutation) and have no
+#: equivalent of the advanced stopping/restart/decay settings.
+RUST_ONLY_OPTIONS = (
+    "crossover_method",
+    "mutation_method",
+    "selection_method",
+    "early_stopping",
+    "restart_on_stagnation",
+    "local_search_iters",
+    "mutation_rate_end",
+    "random_immigrants",
+)
+
+_PARALLEL_STRATEGIES = ("parallel", "parallel_island")
 
 
 class GAResult:
@@ -104,6 +122,15 @@ class GA:
         crossover_rate: Probability of crossover (default: 0.8).
         seed: Random seed for reproducibility.
         verbose: Print strategy selection info (default: False).
+
+    Note:
+        The operator overrides (`crossover_method`, `mutation_method`,
+        `selection_method`) and the advanced settings (`early_stopping`,
+        `restart_on_stagnation`, `local_search_iters`, `mutation_rate_end`,
+        `random_immigrants`) are only applied on the Rust execution paths.
+        The process-pool paths use a fixed operator pipeline; `run()` emits a
+        `UserWarning` naming any such option it is about to ignore. Pass
+        `parallel=False` to force a Rust path.
 
     Example:
         >>> # Simple usage - auto-selects best strategy
@@ -275,11 +302,33 @@ class GA:
                 return "parallel"
             return "rust"
 
+    def _warn_if_options_ignored(self) -> None:
+        """Warn when the selected strategy silently drops Rust-only options."""
+        if self._strategy not in _PARALLEL_STRATEGIES:
+            return
+
+        ignored = [name for name in RUST_ONLY_OPTIONS if getattr(self, name) is not None]
+        if not ignored:
+            return
+
+        warnings.warn(
+            f"The '{self._strategy}' strategy ignores these options: "
+            f"{', '.join(ignored)}. They are only honored by the Rust execution "
+            "paths ('rust' / 'rust_island'), which use a configurable operator "
+            "pipeline; the process-pool paths use a fixed one. Pass "
+            "parallel=False to force a Rust path and have them applied.",
+            UserWarning,
+            stacklevel=3,
+        )
+
     def run(self) -> GAResult:
         """Run the genetic algorithm and return the result.
 
         Automatically selects the optimal execution strategy based on
         fitness function cost and configuration.
+
+        Emits a :class:`UserWarning` naming any Rust-only option that the
+        selected process-pool strategy will ignore.
 
         Returns:
             GAResult with best solution, fitness history, and strategy used.
@@ -288,6 +337,8 @@ class GA:
 
         if self.verbose:
             print(f"Selected strategy: {self._strategy}")
+
+        self._warn_if_options_ignored()
 
         # On free-threaded Python, configure rayon thread pool size
         if is_free_threaded() and self._strategy in ("rust", "rust_island"):
