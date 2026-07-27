@@ -1,5 +1,7 @@
 """Tests for the parga Python bindings."""
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -679,6 +681,87 @@ class TestFacade:
         r2 = run()
         assert r1.best_fitness == r2.best_fitness
         np.testing.assert_array_equal(r1.best_genes(), r2.best_genes())
+
+    @pytest.mark.skipif(
+        is_free_threaded(),
+        reason="free-threaded Python always selects a Rust path, which honors the options",
+    )
+    @pytest.mark.parametrize("islands,strategy", [(1, "parallel"), (2, "parallel_island")])
+    def test_parallel_path_warns_about_ignored_options(self, islands, strategy):
+        """The process-pool paths warn, naming each Rust-only option they drop."""
+        ga = GA(
+            simple_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=2,
+            islands=islands,
+            migration_interval=1,
+            migration_count=1,
+            n_workers=1,
+            parallel=True,
+            seed=42,
+            selection_method=SelectionMethod.rank(),
+            early_stopping=5,
+        )
+        with pytest.warns(UserWarning) as record:
+            result = ga.run()
+
+        assert result.strategy == strategy
+        messages = [str(w.message) for w in record if issubclass(w.category, UserWarning)]
+        assert len(messages) == 1
+        message = messages[0]
+        assert "selection_method" in message
+        assert "early_stopping" in message
+        assert strategy in message
+        # Options that ARE forwarded must not be named as ignored.
+        assert "mutation_rate" not in message.replace("mutation_rate_end", "")
+        # Unset advanced options must not be named either.
+        assert "local_search_iters" not in message
+
+    @pytest.mark.skipif(
+        is_free_threaded(),
+        reason="free-threaded Python always selects a Rust path, which honors the options",
+    )
+    def test_parallel_path_without_advanced_options_does_not_warn(self):
+        """No UserWarning when the parallel path has nothing to ignore."""
+        ga = GA(
+            simple_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=2,
+            n_workers=1,
+            parallel=True,
+            seed=42,
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = ga.run()
+
+        assert result.strategy == "parallel"
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+    @pytest.mark.parametrize("islands,strategy", [(1, "rust"), (2, "rust_island")])
+    def test_rust_path_does_not_warn_about_options(self, islands, strategy):
+        """The Rust paths honor the advanced options, so they must not warn."""
+        ga = GA(
+            simple_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=2,
+            islands=islands,
+            migration_interval=1,
+            migration_count=1,
+            parallel=False,
+            seed=42,
+            selection_method=SelectionMethod.rank(),
+            early_stopping=5,
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = ga.run()
+
+        assert result.strategy == strategy
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
 
     def test_best_genes_returns_copy(self):
         """GAResult.best_genes() returns a copy; mutating it is harmless."""
