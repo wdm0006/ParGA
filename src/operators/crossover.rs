@@ -408,7 +408,6 @@ fn order_crossover<R: Rng>(
 }
 
 /// Partially Mapped Crossover (PMX) for permutations.
-#[allow(clippy::items_after_statements)]
 fn pmx_crossover<R: Rng>(
     parent1: &PermutationGenome,
     parent2: &PermutationGenome,
@@ -420,6 +419,19 @@ fn pmx_crossover<R: Rng>(
     if p1 > p2 {
         std::mem::swap(&mut p1, &mut p2);
     }
+
+    pmx_with_segment(parent1, parent2, p1, p2)
+}
+
+/// PMX with an explicit mapping segment `p1..=p2`.
+#[allow(clippy::items_after_statements)]
+fn pmx_with_segment(
+    parent1: &PermutationGenome,
+    parent2: &PermutationGenome,
+    p1: usize,
+    p2: usize,
+) -> (PermutationGenome, PermutationGenome) {
+    let len = parent1.len();
 
     let mut child1 = vec![usize::MAX; len];
     let mut child2 = vec![usize::MAX; len];
@@ -448,21 +460,33 @@ fn pmx_crossover<R: Rng>(
         p2: usize,
     ) {
         let len = child.len();
+        // The mapping is a bijection over the segment, so a colliding gene resolves
+        // in at most one step per segment position. The bound keeps the chase finite
+        // even if the mapping is ever wired up in the wrong direction.
+        let max_steps = p2 - p1 + 1;
         for i in 0..len {
             if i >= p1 && i <= p2 {
                 continue;
             }
 
             let mut gene = parent[i];
-            while child[p1..=p2].contains(&gene) {
-                gene = *map.get(&gene).unwrap_or(&gene);
+            for _ in 0..max_steps {
+                if !child[p1..=p2].contains(&gene) {
+                    break;
+                }
+                match map.get(&gene) {
+                    Some(&mapped) => gene = mapped,
+                    None => break,
+                }
             }
             child[i] = gene;
         }
     }
 
-    fill_position(&mut child1, parent2, &map1, p1, p2);
-    fill_position(&mut child2, parent1, &map2, p1, p2);
+    // `child1` carries parent1's segment, so a gene taken from parent2 that collides
+    // with that segment must be replaced via parent1 -> parent2 (`map2`), and vice versa.
+    fill_position(&mut child1, parent2, &map2, p1, p2);
+    fill_position(&mut child2, parent1, &map1, p1, p2);
 
     let mut g1 = PermutationGenome::new(child1);
     let mut g2 = PermutationGenome::new(child2);
@@ -664,5 +688,67 @@ mod tests {
         sorted2.sort_unstable();
         assert_eq!(sorted1, vec![0, 1, 2, 3, 4]);
         assert_eq!(sorted2, vec![0, 1, 2, 3, 4]);
+    }
+
+    fn assert_is_permutation(genome: &PermutationGenome, len: usize) {
+        let mut sorted: Vec<_> = genome.order().to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..len).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_pmx_crossover_returns() {
+        let p1 = PermutationGenome::new(vec![0, 1, 2, 3]);
+        let p2 = PermutationGenome::new(vec![2, 3, 0, 1]);
+        let mut rng = crate::rng::create_rng(Some(42));
+
+        let (c1, c2) = PermutationCrossover::PartiallyMapped.crossover(&p1, &p2, &mut rng);
+        assert_is_permutation(&c1, 4);
+        assert_is_permutation(&c2, 4);
+    }
+
+    #[test]
+    fn test_pmx_preserves_segments_for_every_segment() {
+        let p1 = PermutationGenome::new(vec![0, 1, 2, 3]);
+        let p2 = PermutationGenome::new(vec![2, 3, 0, 1]);
+
+        for start in 0..4 {
+            for end in start..4 {
+                let (c1, c2) = pmx_with_segment(&p1, &p2, start, end);
+                assert_is_permutation(&c1, 4);
+                assert_is_permutation(&c2, 4);
+                assert_eq!(
+                    &c1.order()[start..=end],
+                    &p1.order()[start..=end],
+                    "child1 lost parent1's segment {start}..={end}"
+                );
+                assert_eq!(
+                    &c2.order()[start..=end],
+                    &p2.order()[start..=end],
+                    "child2 lost parent2's segment {start}..={end}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_pmx_sweep_over_random_parents_and_segments() {
+        let mut rng = crate::rng::create_rng(Some(7));
+
+        for len in 2..=8usize {
+            for _ in 0..200 {
+                let g1 = PermutationGenome::random(&mut rng, len, &[], &[]);
+                let g2 = PermutationGenome::random(&mut rng, len, &[], &[]);
+                let a = rng.gen_range(0..len);
+                let b = rng.gen_range(0..len);
+                let (start, end) = if a <= b { (a, b) } else { (b, a) };
+
+                let (c1, c2) = pmx_with_segment(&g1, &g2, start, end);
+                assert_is_permutation(&c1, len);
+                assert_is_permutation(&c2, len);
+                assert_eq!(&c1.order()[start..=end], &g1.order()[start..=end]);
+                assert_eq!(&c2.order()[start..=end], &g2.order()[start..=end]);
+            }
+        }
     }
 }

@@ -3,7 +3,8 @@
 use parga::prelude::*;
 use parga::{
     fitness::fitness_fn,
-    operators::crossover::{CrossoverOperator, RealCrossover},
+    operators::crossover::{CrossoverOperator, PermutationCrossover, RealCrossover},
+    operators::mutation::{MutationOperator, PermutationMutation},
 };
 
 fn assert_valid_result(result: &GaResult<RealGenome>) {
@@ -539,4 +540,41 @@ fn test_booth_function() {
     // Booth optimum is at (1, 3) with fitness 0
     // Should get reasonably close
     assert!(result.best_fitness > -5.0);
+}
+
+#[test]
+fn test_permutation_ga_with_pmx_crossover() {
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(6)
+        .generations(5)
+        .mutation_rate(0.2)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    // Reward orderings that are close to the identity permutation.
+    let fitness = fitness_fn(|genome: &PermutationGenome| {
+        let matches = genome
+            .order()
+            .iter()
+            .enumerate()
+            .filter(|(i, &v)| *i == v)
+            .count();
+        matches as f64
+    });
+
+    let mut ga: GeneticAlgorithm<PermutationGenome, _> = GeneticAlgorithm::new(config, fitness)
+        .unwrap()
+        .with_crossover(CrossoverOperator::Permutation(
+            PermutationCrossover::PartiallyMapped,
+        ))
+        .with_mutation(MutationOperator::Permutation(PermutationMutation::Swap));
+
+    let result = ga.run();
+
+    assert_eq!(result.fitness_history.len(), 6);
+    let mut sorted = result.best_individual.genome.order().to_vec();
+    sorted.sort_unstable();
+    assert_eq!(sorted, (0..6).collect::<Vec<_>>());
 }
