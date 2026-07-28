@@ -253,24 +253,18 @@ fn sus_selection<G: Genome + Clone, R: Rng>(
     let start = rng.gen::<f64>() * pointer_distance;
     let mut selected = Vec::with_capacity(count);
 
-    let mut cumulative = 0.0;
+    let mut cumulative = individuals[0].fitness.unwrap_or(0.0) + offset;
     let mut individual_idx = 0;
 
     for i in 0..count {
         let pointer = start + (i as f64) * pointer_distance;
 
-        while cumulative < pointer && individual_idx < individuals.len() {
+        while cumulative < pointer && individual_idx + 1 < individuals.len() {
+            individual_idx += 1;
             cumulative += individuals[individual_idx].fitness.unwrap_or(0.0) + offset;
-            if cumulative < pointer {
-                individual_idx += 1;
-            }
         }
 
-        if individual_idx < individuals.len() {
-            selected.push(individuals[individual_idx].clone());
-        } else {
-            selected.push(individuals.last().cloned().unwrap());
-        }
+        selected.push(individuals[individual_idx].clone());
     }
 
     selected
@@ -355,5 +349,68 @@ mod tests {
         let mut rng = crate::rng::create_rng(Some(42));
         let selected = sus_selection(&pop, 5, &mut rng);
         assert_eq!(selected.len(), 5);
+    }
+
+    #[test]
+    fn test_sus_selects_each_individual_with_uniform_fitness() {
+        let individuals = (0..10)
+            .map(|gene| Individual {
+                genome: RealGenome::new(vec![f64::from(gene)]),
+                fitness: Some(1.0),
+            })
+            .collect();
+        let pop = Population::from_individuals(individuals);
+        let mut rng = crate::rng::create_rng(Some(42));
+
+        let selected = sus_selection(&pop, 10, &mut rng);
+        let genes: Vec<_> = selected
+            .iter()
+            .map(|individual| individual.genome.genes()[0])
+            .collect();
+
+        assert_eq!(genes, (0..10).map(f64::from).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_sus_samples_distinct_fitness_slices() {
+        let individuals = (0..10)
+            .map(|gene| Individual {
+                genome: RealGenome::new(vec![f64::from(gene)]),
+                fitness: Some(-f64::from(gene)),
+            })
+            .collect();
+        let pop = Population::from_individuals(individuals);
+        let mut rng = crate::rng::create_rng(Some(1));
+
+        let selected = sus_selection(&pop, 10, &mut rng);
+        let genes: Vec<_> = selected
+            .iter()
+            .map(|individual| individual.genome.genes()[0])
+            .collect();
+
+        assert!(genes
+            .windows(2)
+            .any(|pair| (pair[0] - pair[1]).abs() > f64::EPSILON));
+        assert!(genes.contains(&9.0));
+    }
+
+    #[test]
+    fn test_sus_multiplicity_tracks_fitness_share() {
+        let individuals = (0..10)
+            .map(|gene| Individual {
+                genome: RealGenome::new(vec![f64::from(gene)]),
+                fitness: Some(if gene == 0 { 91.0 } else { 1.0 }),
+            })
+            .collect();
+        let pop = Population::from_individuals(individuals);
+        let mut rng = crate::rng::create_rng(Some(42));
+
+        let selected = sus_selection(&pop, 100, &mut rng);
+        let best_count = selected
+            .iter()
+            .filter(|individual| individual.genome.genes()[0] == 0.0)
+            .count();
+
+        assert!((89..=93).contains(&best_count));
     }
 }
