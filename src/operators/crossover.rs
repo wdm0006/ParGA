@@ -566,24 +566,16 @@ fn edge_recombination<R: Rng>(
     let len = parent1.len();
 
     // Build edge table
-    let mut edges: std::collections::HashMap<usize, std::collections::HashSet<usize>> =
-        std::collections::HashMap::new();
+    let mut edges = vec![std::collections::BTreeSet::new(); len];
 
-    for i in 0..len {
-        edges.insert(i, std::collections::HashSet::new());
-    }
-
-    fn add_edges(
-        edges: &mut std::collections::HashMap<usize, std::collections::HashSet<usize>>,
-        parent: &PermutationGenome,
-    ) {
+    fn add_edges(edges: &mut [std::collections::BTreeSet<usize>], parent: &PermutationGenome) {
         let len = parent.len();
         for i in 0..len {
             let curr = parent[i];
             let prev = parent[(i + len - 1) % len];
             let next = parent[(i + 1) % len];
-            edges.get_mut(&curr).unwrap().insert(prev);
-            edges.get_mut(&curr).unwrap().insert(next);
+            edges[curr].insert(prev);
+            edges[curr].insert(next);
         }
     }
 
@@ -593,14 +585,14 @@ fn edge_recombination<R: Rng>(
     // Build child
     let mut child = Vec::with_capacity(len);
     let mut current = parent1[0];
-    let mut remaining: std::collections::HashSet<usize> = (0..len).collect();
+    let mut remaining: std::collections::BTreeSet<usize> = (0..len).collect();
 
     while child.len() < len {
         child.push(current);
         remaining.remove(&current);
 
         // Remove current from all edge lists
-        for edge_set in edges.values_mut() {
+        for edge_set in &mut edges {
             edge_set.remove(&current);
         }
 
@@ -609,21 +601,21 @@ fn edge_recombination<R: Rng>(
         }
 
         // Choose next: prefer neighbor with fewest edges
-        let neighbors = edges.get(&current).cloned().unwrap_or_default();
-        let valid_neighbors: Vec<_> = neighbors.iter().filter(|n| remaining.contains(n)).collect();
+        let valid_neighbors: Vec<_> = edges[current]
+            .iter()
+            .filter(|n| remaining.contains(n))
+            .copied()
+            .collect();
 
         current = if valid_neighbors.is_empty() {
             // Pick random remaining
-            *remaining.iter().next().unwrap()
+            let index = rng.gen_range(0..remaining.len());
+            *remaining.iter().nth(index).unwrap()
         } else {
             // Pick neighbor with fewest edges
-            **valid_neighbors
+            *valid_neighbors
                 .iter()
-                .min_by_key(|&&n| {
-                    edges
-                        .get(n)
-                        .map_or(usize::MAX, std::collections::HashSet::len)
-                })
+                .min_by_key(|&&n| edges[n].len())
                 .unwrap()
         };
     }
@@ -750,5 +742,33 @@ mod tests {
                 assert_eq!(&c2.order()[start..=end], &g2.order()[start..=end]);
             }
         }
+    }
+
+    #[test]
+    fn test_edge_recombination_is_reproducible() {
+        let p1 = PermutationGenome::new(vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        let p2 = PermutationGenome::new(vec![0, 7, 3, 4, 2, 6, 5, 1]);
+        let mut rng1 = crate::rng::create_rng(Some(42));
+        let mut rng2 = crate::rng::create_rng(Some(42));
+
+        let children1 = PermutationCrossover::EdgeRecombination.crossover(&p1, &p2, &mut rng1);
+        let children2 = PermutationCrossover::EdgeRecombination.crossover(&p1, &p2, &mut rng2);
+
+        assert_eq!(children1.0.order(), children2.0.order());
+        assert_eq!(children1.1.order(), children2.1.order());
+        assert_eq!(children1.0.order(), &[0, 1, 5, 4, 2, 3, 7, 6]);
+    }
+
+    #[test]
+    fn test_edge_recombination_produces_valid_permutations() {
+        let p1 = PermutationGenome::new(vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        let p2 = PermutationGenome::new(vec![0, 7, 3, 4, 2, 6, 5, 1]);
+        let mut rng = crate::rng::create_rng(Some(42));
+
+        let (child1, child2) =
+            PermutationCrossover::EdgeRecombination.crossover(&p1, &p2, &mut rng);
+
+        assert_is_permutation(&child1, 8);
+        assert_is_permutation(&child2, 8);
     }
 }
