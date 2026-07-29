@@ -105,10 +105,19 @@ impl PyFitness {
             }
         };
 
-        result.extract::<f64>(py).unwrap_or_else(|_| {
+        let Ok(value) = result.extract::<f64>(py) else {
             self.record_error("fitness function did not return a float".to_string());
-            f64::NEG_INFINITY
-        })
+            return f64::NEG_INFINITY;
+        };
+
+        if !value.is_finite() {
+            self.record_error(format!(
+                "fitness function returned a non-finite value: {value}"
+            ));
+            return f64::NEG_INFINITY;
+        }
+
+        value
     }
 }
 
@@ -473,7 +482,8 @@ impl PyGeneticAlgorithm {
     /// Creates a new genetic algorithm.
     ///
     /// Args:
-    ///     fitness_fn: A callable that takes a numpy array and returns a float.
+    ///     fitness_fn: A callable that takes a numpy array and returns a finite
+    ///         float. NaN and +/-inf results are rejected with a RuntimeError.
     ///     genome_length: Length of each genome.
     ///     population_size: Number of individuals in the population.
     ///     generations: Number of generations to evolve.
@@ -636,7 +646,8 @@ impl PyIslandModel {
     /// Creates a new island model.
     ///
     /// Args:
-    ///     fitness_fn: A callable that takes a numpy array and returns a float.
+    ///     fitness_fn: A callable that takes a numpy array and returns a finite
+    ///         float. NaN and +/-inf results are rejected with a RuntimeError.
     ///     genome_length: Length of each genome.
     ///     num_islands: Number of islands.
     ///     island_population: Population size per island.

@@ -22,6 +22,7 @@ Example:
 
 from __future__ import annotations
 
+import math
 import multiprocessing as mp
 import sys
 import warnings
@@ -70,13 +71,31 @@ def _worker_init(fitness_fn_bytes: bytes) -> None:
     _worker_fitness_fn = cloudpickle.loads(fitness_fn_bytes)
 
 
+def _check_fitness_value(value: object) -> float:
+    """Return ``value`` as a finite float or raise ``RuntimeError``.
+
+    Matches the validation the Rust-backed engines apply to callback
+    results, so the same invalid callback fails the same way whichever
+    backend the :class:`~parga.ga.GA` facade selects.
+    """
+    try:
+        score = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("fitness function did not return a float") from exc
+
+    if not math.isfinite(score):
+        raise RuntimeError(f"fitness function returned a non-finite value: {score}")
+
+    return score
+
+
 def _evaluate_batch_worker(genomes: list) -> list[float]:
     """Worker function that evaluates a batch of genomes.
 
     This runs in a separate process. Uses the cached fitness function
     deserialized once at worker startup via _worker_init.
     """
-    return [_worker_fitness_fn(genome) for genome in genomes]
+    return [_check_fitness_value(_worker_fitness_fn(genome)) for genome in genomes]
 
 
 class ParallelGA:
@@ -90,6 +109,8 @@ class ParallelGA:
         - Fitness function must be a pure function (no side effects)
         - Fitness function must be picklable (use cloudpickle for lambdas)
         - Fitness function should not rely on global mutable state
+        - Fitness function must return a finite float (NaN and +/-inf are
+          rejected with a RuntimeError)
 
     Args:
         fitness_fn: A callable that takes a numpy array and returns a float.
