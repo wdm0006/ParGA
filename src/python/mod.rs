@@ -204,10 +204,15 @@ impl PySelectionMethod {
     /// Truncation selection.
     #[staticmethod]
     #[pyo3(signature = (ratio=0.5))]
-    fn truncation(ratio: f64) -> Self {
-        Self {
-            inner: SelectionOperator::Truncation(ratio),
+    fn truncation(ratio: f64) -> PyResult<Self> {
+        if !ratio.is_finite() || ratio <= 0.0 || ratio > 1.0 {
+            return Err(PyValueError::new_err(
+                "ratio must be finite and in the range (0, 1]",
+            ));
         }
+        Ok(Self {
+            inner: SelectionOperator::Truncation(ratio),
+        })
     }
 
     /// Stochastic universal sampling.
@@ -247,28 +252,41 @@ impl PyCrossoverMethod {
     /// Uniform crossover.
     #[staticmethod]
     #[pyo3(signature = (probability=0.5))]
-    fn uniform(probability: f64) -> Self {
-        Self {
-            inner: RealCrossover::Uniform(probability),
+    fn uniform(probability: f64) -> PyResult<Self> {
+        if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+            return Err(PyValueError::new_err(
+                "probability must be finite and in the range [0, 1]",
+            ));
         }
+        Ok(Self {
+            inner: RealCrossover::Uniform(probability),
+        })
     }
 
     /// Blend crossover (BLX-alpha).
     #[staticmethod]
     #[pyo3(signature = (alpha=0.5))]
-    fn blend(alpha: f64) -> Self {
-        Self {
-            inner: RealCrossover::Blend(alpha),
+    fn blend(alpha: f64) -> PyResult<Self> {
+        if !alpha.is_finite() || alpha < 0.0 {
+            return Err(PyValueError::new_err(
+                "alpha must be finite and non-negative",
+            ));
         }
+        Ok(Self {
+            inner: RealCrossover::Blend(alpha),
+        })
     }
 
     /// Simulated binary crossover (SBX).
     #[staticmethod]
     #[pyo3(signature = (eta=20.0))]
-    fn simulated_binary(eta: f64) -> Self {
-        Self {
-            inner: RealCrossover::SimulatedBinary(eta),
+    fn simulated_binary(eta: f64) -> PyResult<Self> {
+        if !eta.is_finite() || eta < 0.0 {
+            return Err(PyValueError::new_err("eta must be finite and non-negative"));
         }
+        Ok(Self {
+            inner: RealCrossover::SimulatedBinary(eta),
+        })
     }
 
     /// Arithmetic crossover.
@@ -292,10 +310,15 @@ impl PyMutationMethod {
     /// Gaussian mutation.
     #[staticmethod]
     #[pyo3(signature = (sigma=0.1))]
-    fn gaussian(sigma: f64) -> Self {
-        Self {
-            inner: RealMutation::Gaussian(sigma),
+    fn gaussian(sigma: f64) -> PyResult<Self> {
+        if !sigma.is_finite() || sigma <= 0.0 {
+            return Err(PyValueError::new_err(
+                "sigma must be finite and strictly positive",
+            ));
         }
+        Ok(Self {
+            inner: RealMutation::Gaussian(sigma),
+        })
     }
 
     /// Uniform mutation.
@@ -309,10 +332,13 @@ impl PyMutationMethod {
     /// Polynomial mutation.
     #[staticmethod]
     #[pyo3(signature = (eta=20.0))]
-    fn polynomial(eta: f64) -> Self {
-        Self {
-            inner: RealMutation::Polynomial(eta),
+    fn polynomial(eta: f64) -> PyResult<Self> {
+        if !eta.is_finite() || eta < 0.0 {
+            return Err(PyValueError::new_err("eta must be finite and non-negative"));
         }
+        Ok(Self {
+            inner: RealMutation::Polynomial(eta),
+        })
     }
 
     /// Boundary mutation.

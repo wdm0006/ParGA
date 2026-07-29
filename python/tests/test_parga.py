@@ -164,6 +164,66 @@ class TestGeneticAlgorithm:
             result = ga.run()
             assert result.best_fitness is not None
 
+    @pytest.mark.parametrize(
+        "factory, parameter",
+        [
+            (lambda: SelectionMethod.truncation(0.0), "ratio"),
+            (lambda: SelectionMethod.truncation(1.1), "ratio"),
+            (lambda: SelectionMethod.truncation(np.nan), "ratio"),
+            (lambda: SelectionMethod.truncation(np.inf), "ratio"),
+            (lambda: SelectionMethod.truncation(-np.inf), "ratio"),
+            (lambda: CrossoverMethod.uniform(-0.1), "probability"),
+            (lambda: CrossoverMethod.uniform(1.1), "probability"),
+            (lambda: CrossoverMethod.uniform(np.nan), "probability"),
+            (lambda: CrossoverMethod.uniform(np.inf), "probability"),
+            (lambda: CrossoverMethod.uniform(-np.inf), "probability"),
+            (lambda: CrossoverMethod.blend(-0.1), "alpha"),
+            (lambda: CrossoverMethod.blend(np.nan), "alpha"),
+            (lambda: CrossoverMethod.blend(np.inf), "alpha"),
+            (lambda: CrossoverMethod.blend(-np.inf), "alpha"),
+            (lambda: CrossoverMethod.simulated_binary(-0.1), "eta"),
+            (lambda: CrossoverMethod.simulated_binary(np.nan), "eta"),
+            (lambda: CrossoverMethod.simulated_binary(np.inf), "eta"),
+            (lambda: CrossoverMethod.simulated_binary(-np.inf), "eta"),
+            (lambda: MutationMethod.gaussian(0.0), "sigma"),
+            (lambda: MutationMethod.gaussian(-0.1), "sigma"),
+            (lambda: MutationMethod.gaussian(np.nan), "sigma"),
+            (lambda: MutationMethod.gaussian(np.inf), "sigma"),
+            (lambda: MutationMethod.gaussian(-np.inf), "sigma"),
+            (lambda: MutationMethod.polynomial(-0.1), "eta"),
+            (lambda: MutationMethod.polynomial(np.nan), "eta"),
+            (lambda: MutationMethod.polynomial(np.inf), "eta"),
+            (lambda: MutationMethod.polynomial(-np.inf), "eta"),
+        ],
+    )
+    def test_parameterized_operator_methods_reject_invalid_values(
+        self, factory, parameter
+    ):
+        """Parameterized operator methods reject invalid domains."""
+        with pytest.raises(ValueError, match=parameter):
+            factory()
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            SelectionMethod.truncation,
+            CrossoverMethod.uniform,
+            CrossoverMethod.blend,
+            CrossoverMethod.simulated_binary,
+            MutationMethod.gaussian,
+            MutationMethod.polynomial,
+            lambda: SelectionMethod.truncation(1.0),
+            lambda: CrossoverMethod.uniform(0.0),
+            lambda: CrossoverMethod.uniform(1.0),
+            lambda: CrossoverMethod.blend(0.0),
+            lambda: CrossoverMethod.simulated_binary(0.0),
+            lambda: MutationMethod.polynomial(0.0),
+        ],
+    )
+    def test_parameterized_operator_methods_accept_valid_boundaries(self, factory):
+        """Parameterized operator methods accept defaults and valid boundaries."""
+        assert factory() is not None
+
     def test_fitness_history(self):
         """Test that fitness history is recorded."""
         ga = GeneticAlgorithm(
