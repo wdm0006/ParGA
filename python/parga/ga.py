@@ -106,7 +106,8 @@ class GA:
 
     Args:
         fitness_fn: Function that takes a numpy array and returns a float.
-                   Higher values are better (maximization).
+                   Higher values are better (maximization). The value must be
+                   finite; NaN and +/-inf are rejected with a RuntimeError.
         genome_length: Number of genes in each individual.
         population_size: Total population size (default: 100).
         generations: Number of generations to evolve (default: 100).

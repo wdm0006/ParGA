@@ -12,6 +12,7 @@ from parga import (
     IslandModel,
     MigrationTopology,
     MutationMethod,
+    ParallelGA,
     ParallelIslandModel,
     SelectionMethod,
     ackley,
@@ -45,6 +46,25 @@ def sphere_objective(genes: np.ndarray) -> float:
 def neg_sphere_objective(genes: np.ndarray) -> float:
     """Negated sphere to MAXIMIZE: optimum 0 at the origin."""
     return float(-np.sum(genes**2))
+
+
+def nan_fitness(genes: np.ndarray) -> float:
+    """Fitness callback that returns NaN."""
+    return float("nan")
+
+
+def inf_fitness(genes: np.ndarray) -> float:
+    """Fitness callback that returns positive infinity."""
+    return float("inf")
+
+
+def neg_inf_fitness(genes: np.ndarray) -> float:
+    """Fitness callback that returns negative infinity."""
+    return float("-inf")
+
+
+# Module-level so the process-pool engines can serialize them to workers.
+NON_FINITE_FITNESS_FNS = [nan_fitness, inf_fitness, neg_inf_fitness]
 
 
 class TestGeneticAlgorithm:
@@ -578,6 +598,81 @@ class TestFitnessCallbackErrors:
         with pytest.raises(RuntimeError, match="did not return a float"):
             island_ga.run()
 
+    @pytest.mark.parametrize("fitness_fn", NON_FINITE_FITNESS_FNS)
+    def test_ga_non_finite_callback(self, fitness_fn):
+        """NaN/±inf from a callback makes GeneticAlgorithm.run() raise."""
+        ga = GeneticAlgorithm(
+            fitness_fn=fitness_fn,
+            genome_length=3,
+            population_size=20,
+            generations=5,
+            seed=42,
+        )
+        with pytest.raises(RuntimeError, match="non-finite value"):
+            ga.run()
+
+    @pytest.mark.parametrize("fitness_fn", NON_FINITE_FITNESS_FNS)
+    def test_island_non_finite_callback(self, fitness_fn):
+        """NaN/±inf from a callback makes IslandModel.run() raise."""
+        island_ga = IslandModel(
+            fitness_fn=fitness_fn,
+            genome_length=3,
+            num_islands=2,
+            island_population=20,
+            generations=5,
+            migration_interval=5,
+            seed=42,
+        )
+        with pytest.raises(RuntimeError, match="non-finite value"):
+            island_ga.run()
+
+    @pytest.mark.parametrize("fitness_fn", NON_FINITE_FITNESS_FNS)
+    def test_facade_non_finite_callback(self, fitness_fn):
+        """The GA facade surfaces a non-finite callback result on the Rust path."""
+        ga = GA(
+            fitness_fn=fitness_fn,
+            genome_length=3,
+            population_size=20,
+            generations=5,
+            parallel=False,
+            seed=42,
+        )
+        with pytest.raises(RuntimeError, match="non-finite value"):
+            ga.run()
+
+    @pytest.mark.parametrize("fitness_fn", NON_FINITE_FITNESS_FNS)
+    def test_parallel_ga_non_finite_callback(self, fitness_fn):
+        """NaN/±inf from a callback makes ParallelGA.run() raise."""
+        with pytest.warns(DeprecationWarning):
+            ga = ParallelGA(
+                fitness_fn=fitness_fn,
+                genome_length=3,
+                population_size=8,
+                generations=2,
+                n_workers=1,
+                seed=42,
+            )
+        with pytest.raises(RuntimeError, match="non-finite value"):
+            ga.run()
+
+    @pytest.mark.parametrize("fitness_fn", NON_FINITE_FITNESS_FNS)
+    def test_parallel_island_non_finite_callback(self, fitness_fn):
+        """NaN/±inf from a callback makes ParallelIslandModel.run() raise."""
+        with pytest.warns(DeprecationWarning):
+            model = ParallelIslandModel(
+                fitness_fn=fitness_fn,
+                genome_length=3,
+                num_islands=2,
+                island_population=8,
+                generations=2,
+                migration_interval=1,
+                migration_count=1,
+                n_workers=1,
+                seed=42,
+            )
+        with pytest.raises(RuntimeError, match="non-finite value"):
+            model.run()
+
     def test_correct_callback_unaffected(self):
         """A correct float-returning callback still succeeds."""
         ga = GeneticAlgorithm(
@@ -589,6 +684,21 @@ class TestFitnessCallbackErrors:
         )
         result = ga.run()
         assert result.best_fitness is not None
+
+    def test_correct_callback_unaffected_parallel(self):
+        """A correct float-returning callback still succeeds on the process pool."""
+        with pytest.warns(DeprecationWarning):
+            ga = ParallelGA(
+                fitness_fn=simple_fitness,
+                genome_length=3,
+                population_size=8,
+                generations=2,
+                n_workers=1,
+                seed=42,
+            )
+        result = ga.run()
+        assert result.best_fitness is not None
+        assert np.isfinite(result.best_fitness)
 
 
 class TestFreeThreadedUtils:
