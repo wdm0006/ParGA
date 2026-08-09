@@ -34,6 +34,18 @@ pub trait Genome: Clone + Debug + Send + Sync + Default + 'static {
 
     /// Clamps genes to the given bounds when the genome supports bounded values.
     fn clamp_to_bounds(&mut self, _lower: &[f64], _upper: &[f64]) {}
+
+    /// Returns true when the engine's hill-climbing local search
+    /// (`GaConfig::local_search_iters`) is meaningful for this representation.
+    ///
+    /// Local search nudges one gene by a fraction of its bounds range and
+    /// rebuilds the genome with [`Genome::from_f64_vec`], which only makes sense
+    /// for continuous genes. Representations whose `from_f64_vec` quantizes the
+    /// perturbed values (binary, permutation) leave this `false` and the engine
+    /// skips local search for them.
+    fn supports_local_search() -> bool {
+        false
+    }
 }
 
 /// Real-valued genome for continuous optimization.
@@ -108,6 +120,10 @@ impl Genome for RealGenome {
 
     fn clamp_to_bounds(&mut self, lower: &[f64], upper: &[f64]) {
         self.clamp(lower, upper);
+    }
+
+    fn supports_local_search() -> bool {
+        true
     }
 }
 
@@ -443,5 +459,12 @@ mod tests {
         genome.order_mut()[1] = 0; // Create duplicate
         genome.repair();
         assert!(PermutationGenome::is_valid_permutation(genome.order()));
+    }
+
+    #[test]
+    fn test_only_real_genomes_support_local_search() {
+        assert!(RealGenome::supports_local_search());
+        assert!(!BinaryGenome::supports_local_search());
+        assert!(!PermutationGenome::supports_local_search());
     }
 }

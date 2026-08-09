@@ -578,3 +578,65 @@ fn test_permutation_ga_with_pmx_crossover() {
     sorted.sort_unstable();
     assert_eq!(sorted, (0..6).collect::<Vec<_>>());
 }
+
+#[test]
+fn test_local_search_iters_leaves_permutation_genomes_valid() {
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(6)
+        .generations(5)
+        .mutation_rate(0.2)
+        .local_search_iters(20)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    // Reward orderings that are close to the identity permutation.
+    let fitness = fitness_fn(|genome: &PermutationGenome| {
+        let matches = genome
+            .order()
+            .iter()
+            .enumerate()
+            .filter(|(i, &v)| *i == v)
+            .count();
+        matches as f64
+    });
+
+    let mut ga: GeneticAlgorithm<PermutationGenome, _> = GeneticAlgorithm::new(config, fitness)
+        .unwrap()
+        .with_crossover(CrossoverOperator::Permutation(PermutationCrossover::Order))
+        .with_mutation(MutationOperator::Permutation(PermutationMutation::Swap));
+
+    let result = ga.run();
+
+    assert_eq!(result.fitness_history.len(), 6);
+    let order = result.best_individual.genome.order().to_vec();
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        (0..6).collect::<Vec<_>>(),
+        "local search must not corrupt a permutation genome: {order:?}"
+    );
+}
+
+#[test]
+fn test_local_search_iters_completes_for_binary_genomes() {
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(8)
+        .generations(5)
+        .mutation_rate(0.2)
+        .local_search_iters(20)
+        .seed(42)
+        .build()
+        .unwrap();
+
+    let fitness = fitness_fn(|genome: &BinaryGenome| genome.count_ones() as f64);
+
+    let mut ga: GeneticAlgorithm<BinaryGenome, _> = GeneticAlgorithm::new(config, fitness).unwrap();
+    let result = ga.run();
+
+    assert_eq!(result.fitness_history.len(), 6);
+    assert_eq!(result.best_individual.genome.len(), 8);
+}

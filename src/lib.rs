@@ -124,6 +124,11 @@ pub struct GaConfig {
     /// Number of local search iterations to apply to the best individual each
     /// generation. Each iteration tries a small random perturbation and keeps
     /// it if fitness improves. 0 or None means no local search (default).
+    ///
+    /// Only genomes whose [`Genome::supports_local_search`] returns true honor
+    /// this setting — that is `RealGenome` (and any custom continuous genome
+    /// opting in). For `BinaryGenome` and `PermutationGenome` the perturbation
+    /// has no meaningful representation, so the setting is ignored.
     #[builder(default = "None", setter(strip_option))]
     pub local_search_iters: Option<usize>,
 
@@ -481,9 +486,9 @@ where
             }
         }
 
-        // Local search on the best individual
+        // Local search on the best individual (real-valued genomes only)
         if let Some(iters) = self.config.local_search_iters {
-            if iters > 0 {
+            if iters > 0 && G::supports_local_search() {
                 self.local_search(iters);
             }
         }
@@ -493,6 +498,9 @@ where
 
     /// Apply local search (hill climbing) to the best individual.
     /// Tries small random perturbations and keeps improvements.
+    ///
+    /// Only called for genomes whose `Genome::supports_local_search` is true,
+    /// because the perturbation is expressed in real-valued gene space.
     fn local_search(&mut self, iterations: usize) {
         let best = match self.population.best() {
             Some(b) => b.clone(),
