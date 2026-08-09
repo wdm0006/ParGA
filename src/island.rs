@@ -337,7 +337,9 @@ where
         let config = &self.config;
         let selection = &self.selection;
         let crossover = &self.crossover;
-        let mutation = &self.mutation;
+        let mutation = self
+            .mutation
+            .for_generation(self.generation, self.config.generations);
 
         #[cfg(feature = "parallel")]
         {
@@ -346,7 +348,7 @@ where
                 .zip(self.island_rngs.par_iter_mut())
                 .for_each(|(island, island_rng)| {
                     evolve_population(
-                        island, config, selection, crossover, mutation, &lower, &upper, island_rng,
+                        island, config, selection, crossover, &mutation, &lower, &upper, island_rng,
                     );
                 });
         }
@@ -355,7 +357,7 @@ where
         {
             for (island, island_rng) in self.islands.iter_mut().zip(self.island_rngs.iter_mut()) {
                 evolve_population(
-                    island, config, selection, crossover, mutation, &lower, &upper, island_rng,
+                    island, config, selection, crossover, &mutation, &lower, &upper, island_rng,
                 );
             }
         }
