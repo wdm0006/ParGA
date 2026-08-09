@@ -1,6 +1,9 @@
 //! Integration tests for the parga library.
 
 use parga::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use parga::{
     fitness::fitness_fn,
     operators::crossover::{CrossoverOperator, PermutationCrossover, RealCrossover},
@@ -577,4 +580,79 @@ fn test_permutation_ga_with_pmx_crossover() {
     let mut sorted = result.best_individual.genome.order().to_vec();
     sorted.sort_unstable();
     assert_eq!(sorted, (0..6).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_local_search_iters_leaves_permutation_genomes_valid() {
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(8)
+        .generations(5)
+        .mutation_rate(0.2)
+        .local_search_iters(20)
+        .seed(1)
+        .build()
+        .unwrap();
+
+    // Reward orderings that are close to the identity permutation.
+    let fitness = fitness_fn(|genome: &PermutationGenome| {
+        let matches = genome
+            .order()
+            .iter()
+            .enumerate()
+            .filter(|(i, &v)| *i == v)
+            .count();
+        matches as f64
+    });
+
+    let mut ga: GeneticAlgorithm<PermutationGenome, _> = GeneticAlgorithm::new(config, fitness)
+        .unwrap()
+        .with_crossover(CrossoverOperator::Permutation(PermutationCrossover::Order))
+        .with_mutation(MutationOperator::Permutation(PermutationMutation::Swap));
+
+    let result = ga.run();
+
+    assert_eq!(result.fitness_history.len(), 6);
+    let order = result.best_individual.genome.order().to_vec();
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        (0..8).collect::<Vec<_>>(),
+        "local search must not corrupt a permutation genome: {order:?}"
+    );
+}
+
+#[test]
+fn test_local_search_iters_is_skipped_for_binary_genomes() {
+    let config = GaConfig::builder()
+        .population_size(20)
+        .genome_length(8)
+        .generations(5)
+        .mutation_rate(0.2)
+        .local_search_iters(20)
+        .seed(1)
+        .build()
+        .unwrap();
+
+    let evaluations = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&evaluations);
+    let fitness = fitness_fn(move |genome: &BinaryGenome| {
+        counter.fetch_add(1, Ordering::Relaxed);
+        genome.count_ones() as f64
+    });
+
+    let mut ga: GeneticAlgorithm<BinaryGenome, _> = GeneticAlgorithm::new(config, fitness).unwrap();
+    let result = ga.run();
+
+    assert_eq!(result.fitness_history.len(), 6);
+    // Evolution alone evaluates 110 genomes here; running local search would add
+    // `generations * local_search_iters` = 100 more that can never flip a bit,
+    // because the perturbation is far below the 0.5 threshold
+    // `BinaryGenome::from_f64_vec` rounds at and non-improving steps are reverted.
+    let evaluated = evaluations.load(Ordering::Relaxed);
+    assert!(
+        evaluated < 150,
+        "local search should not evaluate anything for binary genomes, saw {evaluated} evaluations"
+    );
 }
