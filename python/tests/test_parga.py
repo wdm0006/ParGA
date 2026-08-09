@@ -63,6 +63,11 @@ def neg_inf_fitness(genes: np.ndarray) -> float:
     return float("-inf")
 
 
+def plateau_fitness(genes: np.ndarray) -> float:
+    """Constant objective, so the best fitness can never improve after gen 0."""
+    return -1.0
+
+
 # Module-level so the process-pool engines can serialize them to workers.
 NON_FINITE_FITNESS_FNS = [nan_fitness, inf_fitness, neg_inf_fitness]
 
@@ -871,7 +876,9 @@ class TestFacade:
             parallel=True,
             seed=42,
             selection_method=SelectionMethod.rank(),
+            restart_on_stagnation=5,
             early_stopping=5,
+            mutation_rate_end=0.0,
         )
         with pytest.warns(UserWarning) as record:
             result = ga.run()
@@ -881,10 +888,11 @@ class TestFacade:
         assert len(messages) == 1
         message = messages[0]
         assert "selection_method" in message
-        assert "early_stopping" in message
+        assert "restart_on_stagnation" in message
         assert strategy in message
         # Options that ARE forwarded must not be named as ignored.
-        assert "mutation_rate" not in message.replace("mutation_rate_end", "")
+        assert "mutation_rate" not in message
+        assert "early_stopping" not in message
         # Unset advanced options must not be named either.
         assert "local_search_iters" not in message
 
@@ -948,3 +956,184 @@ class TestFacade:
         genes[:] = 999.0
         # A fresh call must still return the untouched best genome.
         np.testing.assert_array_equal(result.best_genes(), original)
+
+
+def _parallel_ga(**kwargs) -> ParallelGA:
+    """Build a small ParallelGA, swallowing the deprecation warning."""
+    settings = {
+        "fitness_fn": plateau_fitness,
+        "genome_length": 2,
+        "population_size": 8,
+        "generations": 6,
+        "n_workers": 1,
+        "seed": 7,
+    }
+    settings.update(kwargs)
+    with pytest.warns(DeprecationWarning):
+        return ParallelGA(**settings)
+
+
+def _parallel_island(**kwargs) -> ParallelIslandModel:
+    """Build a small ParallelIslandModel, swallowing the deprecation warning."""
+    settings = {
+        "fitness_fn": plateau_fitness,
+        "genome_length": 2,
+        "num_islands": 2,
+        "island_population": 8,
+        "generations": 6,
+        "migration_interval": 1,
+        "migration_count": 1,
+        "n_workers": 1,
+        "seed": 7,
+    }
+    settings.update(kwargs)
+    with pytest.warns(DeprecationWarning):
+        return ParallelIslandModel(**settings)
+
+
+class TestParallelEngineOptions:
+    """early_stopping and mutation_rate_end on the process-pool engines."""
+
+    def test_ga_early_stopping_stops_early(self):
+        """A plateaued objective stops before the configured generation count."""
+        result = _parallel_ga(early_stopping=1).run()
+
+        assert result.generations < 6
+        # gen 0 improves on -inf, gen 1 stagnates and trips patience=1.
+        assert result.generations == 2
+        # One history entry for the initial evaluation plus one per generation.
+        assert len(result.fitness_history) == result.generations + 1
+
+    def test_ga_without_early_stopping_runs_every_generation(self):
+        """Default (None) keeps today's behavior: no early exit."""
+        result = _parallel_ga().run()
+
+        assert result.generations == 6
+        assert len(result.fitness_history) == 7
+
+    def test_island_early_stopping_stops_early(self):
+        """The island engine honors early_stopping equivalently."""
+        result = _parallel_island(early_stopping=1).run()
+
+        assert result.generations == 2
+        assert len(result.fitness_history) == result.generations + 1
+
+    def test_island_without_early_stopping_runs_every_generation(self):
+        """Default (None) keeps today's behavior on the island engine too."""
+        result = _parallel_island().run()
+
+        assert result.generations == 6
+        assert len(result.fitness_history) == 7
+
+    def test_ga_mutation_rate_end_changes_the_search(self):
+        """Decaying the mutation rate to 0 reaches a different best fitness."""
+        settings = {
+            "fitness_fn": neg_sphere_objective,
+            "genome_length": 4,
+            "generations": 5,
+            "seed": 1234,
+            "mutation_rate": 0.5,
+            "lower_bounds": [-5.0] * 4,
+            "upper_bounds": [5.0] * 4,
+        }
+        baseline = _parallel_ga(**settings).run()
+        decayed = _parallel_ga(mutation_rate_end=0.0, **settings).run()
+        # A final rate equal to the starting rate is the identity case: it must
+        # reproduce the baseline exactly, pinning "no behavior change by default".
+        flat = _parallel_ga(mutation_rate_end=0.5, **settings).run()
+
+        assert baseline.best_fitness != decayed.best_fitness
+        assert flat.best_fitness == baseline.best_fitness
+        np.testing.assert_array_equal(flat.best_genes(), baseline.best_genes())
+
+    def test_island_mutation_rate_end_changes_the_search(self):
+        """The island engine applies the decayed rate too."""
+        settings = {
+            "fitness_fn": neg_sphere_objective,
+            "genome_length": 4,
+            "generations": 5,
+            "migration_interval": 2,
+            "seed": 99,
+            "mutation_rate": 0.5,
+            "lower_bounds": [-5.0] * 4,
+            "upper_bounds": [5.0] * 4,
+        }
+        baseline = _parallel_island(**settings).run()
+        decayed = _parallel_island(mutation_rate_end=0.0, **settings).run()
+        flat = _parallel_island(mutation_rate_end=0.5, **settings).run()
+
+        assert baseline.best_fitness != decayed.best_fitness
+        assert flat.best_fitness == baseline.best_fitness
+        np.testing.assert_array_equal(flat.best_genes(), baseline.best_genes())
+
+    @pytest.mark.parametrize("bad_rate", [-0.1, 1.5, float("nan")])
+    def test_ga_rejects_invalid_mutation_rate_end(self, bad_rate):
+        """mutation_rate_end is validated like every other rate."""
+        with pytest.raises(ValueError, match="mutation_rate_end"):
+            _parallel_ga(mutation_rate_end=bad_rate)
+
+    @pytest.mark.parametrize("bad_rate", [-0.1, 1.5, float("nan")])
+    def test_island_rejects_invalid_mutation_rate_end(self, bad_rate):
+        """The island engine validates mutation_rate_end too."""
+        with pytest.raises(ValueError, match="mutation_rate_end"):
+            _parallel_island(mutation_rate_end=bad_rate)
+
+    @pytest.mark.skipif(
+        is_free_threaded(),
+        reason="free-threaded Python always selects a Rust path",
+    )
+    @pytest.mark.parametrize(
+        "islands,strategy", [(1, "parallel"), (2, "parallel_island")]
+    )
+    def test_facade_forwards_early_stopping(self, islands, strategy):
+        """GA forwards early_stopping to the process-pool engines."""
+        ga = GA(
+            plateau_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=6,
+            islands=islands,
+            migration_interval=1,
+            migration_count=1,
+            n_workers=1,
+            parallel=True,
+            seed=7,
+            early_stopping=1,
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = ga.run()
+
+        assert result.strategy == strategy
+        assert result.generations == 2
+        assert len(result.fitness_history) == result.generations + 1
+        # early_stopping is honored now, so nothing may warn about ignoring it.
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+    @pytest.mark.skipif(
+        is_free_threaded(),
+        reason="free-threaded Python always selects a Rust path",
+    )
+    def test_facade_forwards_mutation_rate_end(self):
+        """GA forwards mutation_rate_end, and it changes the search."""
+
+        def run(**kwargs):
+            return GA(
+                neg_sphere_objective,
+                genome_length=4,
+                population_size=8,
+                generations=5,
+                bounds=(-5.0, 5.0),
+                n_workers=1,
+                parallel=True,
+                seed=1234,
+                mutation_rate=0.5,
+                **kwargs,
+            ).run()
+
+        baseline = run()
+        decayed = run(mutation_rate_end=0.0)
+
+        assert baseline.strategy == "parallel"
+        assert decayed.strategy == "parallel"
+        assert baseline.best_fitness != decayed.best_fitness

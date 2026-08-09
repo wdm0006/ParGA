@@ -38,6 +38,22 @@ from ._validation import validate_ga_config, validate_island_config
 
 _worker_fitness_fn = None
 
+#: Improvement smaller than this counts as stagnation, matching the Rust engine.
+_STAGNATION_EPSILON = 1e-12
+
+
+def _decayed_mutation_rate(
+    start: float, end: float | None, generation: int, generations: int
+) -> float:
+    """Linearly interpolate the mutation rate for ``generation``.
+
+    Mirrors the Rust engine: ``start + (gen / generations) * (end - start)``.
+    Returns ``start`` unchanged when no final rate is configured.
+    """
+    if end is None:
+        return start
+    return start + (generation / max(1, generations)) * (end - start)
+
 
 def _dumps_fitness_fn(fitness_fn: Callable) -> bytes:
     """Serialize a fitness function for use in worker processes.
@@ -125,6 +141,12 @@ class ParallelGA:
         upper_bounds: Upper bounds for each gene.
         seed: Random seed for reproducibility.
         chunk_size: Number of individuals per batch sent to workers.
+        early_stopping: Stop once the best fitness has failed to improve for
+            this many consecutive generations. None (default) runs every
+            configured generation.
+        mutation_rate_end: Final mutation rate. When set, the rate is
+            linearly interpolated from ``mutation_rate`` to this value over
+            the configured generations. None (default) keeps the rate fixed.
     """
 
     def __init__(
@@ -142,6 +164,8 @@ class ParallelGA:
         upper_bounds: list[float] | None = None,
         seed: int | None = None,
         chunk_size: int | None = None,
+        early_stopping: int | None = None,
+        mutation_rate_end: float | None = None,
     ):
         warnings.warn(
             "ParallelGA is deprecated. Use GA() instead — on free-threaded "
@@ -168,6 +192,8 @@ class ParallelGA:
         )
         self.seed = seed
         self.chunk_size = chunk_size or max(1, population_size // (self.n_workers * 2))
+        self.early_stopping = early_stopping
+        self.mutation_rate_end = mutation_rate_end
 
         validate_ga_config(
             genome_length=genome_length,
@@ -178,6 +204,7 @@ class ParallelGA:
             crossover_rate=crossover_rate,
             lower_bounds=self.lower_bounds,
             upper_bounds=self.upper_bounds,
+            mutation_rate_end=mutation_rate_end,
         )
 
     def _create_random_population(self, rng: np.random.Generator) -> list[np.ndarray]:
@@ -271,9 +298,15 @@ class ParallelGA:
 
         return child1, child2
 
-    def _mutate(self, individual: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-        """Gaussian mutation."""
-        mask = rng.random(len(individual)) < self.mutation_rate
+    def _mutate(
+        self,
+        individual: np.ndarray,
+        rng: np.random.Generator,
+        mutation_rate: float | None = None,
+    ) -> np.ndarray:
+        """Gaussian mutation at ``mutation_rate`` (defaults to the configured rate)."""
+        rate = self.mutation_rate if mutation_rate is None else mutation_rate
+        mask = rng.random(len(individual)) < rate
         if np.any(mask):
             sigma = (np.array(self.upper_bounds) - np.array(self.lower_bounds)) * 0.1
             individual[mask] += rng.normal(0, sigma[mask])
@@ -282,6 +315,11 @@ class ParallelGA:
 
     def run(self) -> ParallelGAResult:
         """Run the genetic algorithm with parallel fitness evaluation.
+
+        Honors ``early_stopping`` and ``mutation_rate_end`` with the same
+        semantics as the Rust engine. The returned ``generations`` is the
+        number of generations actually evolved, which is lower than the
+        configured count when early stopping fires.
 
         Returns:
             ParallelGAResult with the best solution found.
@@ -317,7 +355,14 @@ class ParallelGA:
             fitness_history.append(best_fitness)
 
             # Evolution loop
-            for _gen in range(self.generations):
+            stagnation_count = 0
+            best_so_far = float("-inf")
+            generations_evolved = 0
+            for gen in range(self.generations):
+                mutation_rate = _decayed_mutation_rate(
+                    self.mutation_rate, self.mutation_rate_end, gen, self.generations
+                )
+
                 # Partial sort: only need top-k elites, not full sort
                 if self.elitism > 0 and self.elitism < len(fitness):
                     fitness_arr = np.array(fitness)
@@ -345,8 +390,8 @@ class ParallelGA:
 
                     child1, child2 = self._crossover(parent1, parent2, rng)
 
-                    child1 = self._mutate(child1, rng)
-                    child2 = self._mutate(child2, rng)
+                    child1 = self._mutate(child1, rng, mutation_rate)
+                    child2 = self._mutate(child2, rng, mutation_rate)
 
                     new_population.append(child1)
                     new_fitness.append(None)
@@ -367,11 +412,24 @@ class ParallelGA:
                         best_fitness = f
                         best_individual = population[i].copy()
                 fitness_history.append(best_fitness)
+                generations_evolved = gen + 1
+
+                if best_fitness > best_so_far + _STAGNATION_EPSILON:
+                    best_so_far = best_fitness
+                    stagnation_count = 0
+                else:
+                    stagnation_count += 1
+
+                if (
+                    self.early_stopping is not None
+                    and stagnation_count >= self.early_stopping
+                ):
+                    break
 
         return ParallelGAResult(
             best_genes=best_individual,
             best_fitness=best_fitness,
-            generations=self.generations,
+            generations=generations_evolved,
             fitness_history=fitness_history,
         )
 
@@ -418,6 +476,12 @@ class ParallelIslandModel:
         migration_interval: Generations between migrations.
         migration_count: Number of individuals to migrate.
         n_workers: Number of worker processes for fitness evaluation.
+        early_stopping: Stop once the global best fitness has failed to
+            improve for this many consecutive generations. None (default)
+            runs every configured generation.
+        mutation_rate_end: Final mutation rate. When set, the rate is
+            linearly interpolated from ``mutation_rate`` to this value over
+            the configured generations. None (default) keeps the rate fixed.
         **kwargs: Additional arguments passed to each island's GA.
     """
 
@@ -438,6 +502,8 @@ class ParallelIslandModel:
         lower_bounds: list[float] | None = None,
         upper_bounds: list[float] | None = None,
         seed: int | None = None,
+        early_stopping: int | None = None,
+        mutation_rate_end: float | None = None,
     ):
         warnings.warn(
             "ParallelIslandModel is deprecated. Use GA(islands=N) instead — "
@@ -466,6 +532,8 @@ class ParallelIslandModel:
             upper_bounds if upper_bounds is not None else [10.0] * genome_length
         )
         self.seed = seed
+        self.early_stopping = early_stopping
+        self.mutation_rate_end = mutation_rate_end
 
         validate_island_config(
             genome_length=genome_length,
@@ -479,10 +547,16 @@ class ParallelIslandModel:
             crossover_rate=crossover_rate,
             lower_bounds=self.lower_bounds,
             upper_bounds=self.upper_bounds,
+            mutation_rate_end=mutation_rate_end,
         )
 
     def run(self) -> ParallelGAResult:
-        """Run the island model with parallel fitness evaluation."""
+        """Run the island model with parallel fitness evaluation.
+
+        Honors ``early_stopping`` and ``mutation_rate_end`` with the same
+        semantics as the Rust engine. The returned ``generations`` is the
+        number of generations actually evolved.
+        """
         rng = np.random.default_rng(self.seed)
 
         # Initialize islands (each is a list of individuals)
@@ -541,7 +615,14 @@ class ParallelIslandModel:
             fitness_history.append(best_fitness)
 
             # Evolution loop
+            stagnation_count = 0
+            best_so_far = float("-inf")
+            generations_evolved = 0
             for gen in range(self.generations):
+                mutation_rate = _decayed_mutation_rate(
+                    self.mutation_rate, self.mutation_rate_end, gen, self.generations
+                )
+
                 # Track which individuals are new (need evaluation)
                 all_new_fitness: list[float | None] = []
 
@@ -595,7 +676,7 @@ class ParallelIslandModel:
 
                         # Mutation
                         for child in [child1, child2]:
-                            mask = rng.random(len(child)) < self.mutation_rate
+                            mask = rng.random(len(child)) < mutation_rate
                             if np.any(mask):
                                 ub = np.array(self.upper_bounds)
                                 lb = np.array(self.lower_bounds)
@@ -675,10 +756,23 @@ class ParallelIslandModel:
                             best_fitness = f
                             best_individual = island[j].copy()
                 fitness_history.append(best_fitness)
+                generations_evolved = gen + 1
+
+                if best_fitness > best_so_far + _STAGNATION_EPSILON:
+                    best_so_far = best_fitness
+                    stagnation_count = 0
+                else:
+                    stagnation_count += 1
+
+                if (
+                    self.early_stopping is not None
+                    and stagnation_count >= self.early_stopping
+                ):
+                    break
 
         return ParallelGAResult(
             best_genes=best_individual,
             best_fitness=best_fitness,
-            generations=self.generations,
+            generations=generations_evolved,
             fitness_history=fitness_history,
         )

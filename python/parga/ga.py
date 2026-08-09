@@ -45,15 +45,16 @@ from ._validation import validate_ga_config, validate_island_config
 #: Constructor options that only the Rust execution paths honor. The
 #: process-pool engines in ``parga.parallel`` use a fixed operator pipeline
 #: (tournament selection, blend crossover, Gaussian mutation) and have no
-#: equivalent of the advanced stopping/restart/decay settings.
+#: equivalent of the advanced restart/local-search/immigrant settings.
+#: ``early_stopping`` and ``mutation_rate_end`` are coordinator-loop concerns
+#: that the process-pool engines implement directly, so they are forwarded
+#: rather than dropped.
 RUST_ONLY_OPTIONS = (
     "crossover_method",
     "mutation_method",
     "selection_method",
-    "early_stopping",
     "restart_on_stagnation",
     "local_search_iters",
-    "mutation_rate_end",
     "random_immigrants",
 )
 
@@ -125,13 +126,14 @@ class GA:
         verbose: Print strategy selection info (default: False).
 
     Note:
-        The operator overrides (`crossover_method`, `mutation_method`,
-        `selection_method`) and the advanced settings (`early_stopping`,
-        `restart_on_stagnation`, `local_search_iters`, `mutation_rate_end`,
-        `random_immigrants`) are only applied on the Rust execution paths.
-        The process-pool paths use a fixed operator pipeline; `run()` emits a
-        `UserWarning` naming any such option it is about to ignore. Pass
-        `parallel=False` to force a Rust path.
+        `early_stopping` and `mutation_rate_end` are honored on every
+        execution path. The operator overrides (`crossover_method`,
+        `mutation_method`, `selection_method`) and the remaining advanced
+        settings (`restart_on_stagnation`, `local_search_iters`,
+        `random_immigrants`) are only applied on the Rust execution paths,
+        because the process-pool paths use a fixed operator pipeline;
+        `run()` emits a `UserWarning` naming any such option it is about to
+        ignore. Pass `parallel=False` to force a Rust path.
 
     Example:
         >>> # Simple usage - auto-selects best strategy
@@ -409,6 +411,8 @@ class GA:
             lower_bounds=self.lower_bounds,
             upper_bounds=self.upper_bounds,
             seed=self.seed,
+            early_stopping=self.early_stopping,
+            mutation_rate_end=self.mutation_rate_end,
         )
         result = ga.run()
         return GAResult(
@@ -472,6 +476,8 @@ class GA:
             lower_bounds=self.lower_bounds,
             upper_bounds=self.upper_bounds,
             seed=self.seed,
+            early_stopping=self.early_stopping,
+            mutation_rate_end=self.mutation_rate_end,
         )
         result = ga.run()
         return GAResult(
