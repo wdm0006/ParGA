@@ -26,6 +26,10 @@ pub enum RealMutation {
     Polynomial(f64),
 
     /// Non-uniform mutation (decreases over time).
+    ///
+    /// During a GA run, `generation` is replaced by the engine's current
+    /// generation. A `max_generations` value of zero uses the run's configured
+    /// generation count. When used directly, zero keeps mutation unannealed.
     NonUniform {
         generation: usize,
         max_generations: usize,
@@ -81,6 +85,27 @@ pub enum MutationOperator<G: Genome> {
 impl<G: Genome> Default for MutationOperator<G> {
     fn default() -> Self {
         Self::Real(RealMutation::Gaussian(0.1))
+    }
+}
+
+impl<G: Genome> MutationOperator<G> {
+    pub(crate) fn for_generation(&self, generation: usize, configured_generations: usize) -> Self {
+        match self {
+            Self::Real(RealMutation::NonUniform {
+                max_generations, ..
+            }) => Self::Real(RealMutation::NonUniform {
+                generation,
+                max_generations: if *max_generations == 0 {
+                    configured_generations
+                } else {
+                    *max_generations
+                },
+            }),
+            Self::Real(mutation) => Self::Real(*mutation),
+            Self::Binary(mutation) => Self::Binary(*mutation),
+            Self::Permutation(mutation) => Self::Permutation(*mutation),
+            Self::_Phantom(_) => Self::_Phantom(std::marker::PhantomData),
+        }
     }
 }
 
@@ -205,7 +230,11 @@ impl Mutation<RealGenome> for RealMutation {
                 generation,
                 max_generations,
             } => {
-                let t = *generation as f64 / *max_generations as f64;
+                let t = if *max_generations == 0 {
+                    0.0
+                } else {
+                    (*generation as f64 / *max_generations as f64).clamp(0.0, 1.0)
+                };
                 let b = 5.0; // System parameter
 
                 for (i, gene) in genes.iter_mut().enumerate() {
@@ -326,6 +355,12 @@ impl PermutationMutation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fitness::fitness_fn;
+    use crate::operators::crossover::{CrossoverOperator, RealCrossover};
+    use crate::operators::selection::SelectionOperator;
+    use crate::population::{Individual, Population};
+    use crate::{GaConfig, GeneticAlgorithm};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_gaussian_mutation() {
@@ -420,6 +455,81 @@ mod tests {
             moved > samples / 4,
             "expected roughly half the genes to move inward, got {moved} of {samples}"
         );
+    }
+
+    #[test]
+    fn test_non_uniform_mutation_anneals_during_ga_run() {
+        let generations = 40;
+        let genome_length = 256;
+        let population_size = 64;
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&observations);
+        let fitness = fitness_fn(move |genome: &RealGenome| {
+            let mean_displacement =
+                genome.genes().iter().map(|gene| gene.abs()).sum::<f64>() / genome.len() as f64;
+            recorded.lock().unwrap().push(mean_displacement);
+            -mean_displacement
+        });
+        let config = GaConfig::builder()
+            .population_size(population_size)
+            .genome_length(genome_length)
+            .generations(generations)
+            .mutation_rate(1.0)
+            .crossover_rate(0.0)
+            .elitism(population_size - 2)
+            .lower_bounds(vec![-5.0; genome_length])
+            .upper_bounds(vec![5.0; genome_length])
+            .seed(42)
+            .build()
+            .unwrap();
+        let population = Population::from_individuals(
+            (0..population_size)
+                .map(|_| Individual::new(RealGenome::new(vec![0.0; genome_length])))
+                .collect(),
+        );
+        let mut ga = GeneticAlgorithm::with_operators(
+            config,
+            fitness,
+            population,
+            SelectionOperator::Truncation(0.1),
+            CrossoverOperator::Real(RealCrossover::Arithmetic),
+            MutationOperator::Real(RealMutation::NonUniform {
+                generation: 0,
+                max_generations: 0,
+            }),
+        )
+        .unwrap();
+
+        ga.run();
+
+        let observations = observations.lock().unwrap();
+        let evolved = &observations[population_size..];
+        let quarter = generations / 4 * 2;
+        let early_mean = evolved[..quarter].iter().sum::<f64>() / quarter as f64;
+        let late_mean = evolved[evolved.len() - quarter..].iter().sum::<f64>() / quarter as f64;
+        assert!(
+            late_mean < early_mean * 0.25,
+            "non-uniform mutation did not materially anneal: early={early_mean}, late={late_mean}"
+        );
+    }
+
+    #[test]
+    fn test_non_uniform_mutation_with_zero_max_generations_stays_finite_and_bounded() {
+        let lower = vec![-5.0; 2000];
+        let upper = vec![5.0; 2000];
+        let mut genome = RealGenome::new(vec![0.0; 2000]);
+        let mut rng = crate::rng::create_rng(Some(42));
+
+        RealMutation::NonUniform {
+            generation: 0,
+            max_generations: 0,
+        }
+        .mutate(&mut genome, 1.0, &lower, &upper, &mut rng);
+
+        assert!(genome
+            .genes()
+            .iter()
+            .all(|gene| gene.is_finite() && (-5.0..=5.0).contains(gene)));
     }
 
     #[test]

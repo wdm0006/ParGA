@@ -402,6 +402,9 @@ where
         // Crossover and mutation using cached bounds
         let lower = &self.cached_lower;
         let upper = &self.cached_upper;
+        let mutation = self
+            .mutation
+            .for_generation(self.generation, self.config.generations);
         for chunk in parents.chunks(2) {
             if chunk.len() == 2 {
                 let (mut child1, mut child2) = if self.rng.gen::<f64>() < self.config.crossover_rate
@@ -417,14 +420,14 @@ where
                 let mut ind1 = Individual::new(child1);
                 let mut ind2 = Individual::new(child2);
 
-                self.mutation.mutate(
+                mutation.mutate(
                     &mut ind1.genome,
                     self.config.mutation_rate,
                     lower,
                     upper,
                     &mut self.rng,
                 );
-                self.mutation.mutate(
+                mutation.mutate(
                     &mut ind2.genome,
                     self.config.mutation_rate,
                     lower,
@@ -438,7 +441,7 @@ where
                 }
             } else if !chunk.is_empty() {
                 let mut ind = chunk[0].clone();
-                self.mutation.mutate(
+                mutation.mutate(
                     &mut ind.genome,
                     self.config.mutation_rate,
                     lower,
