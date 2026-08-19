@@ -42,23 +42,31 @@ from parga.parallel import ParallelGA, ParallelIslandModel
 
 from ._validation import validate_ga_config, validate_island_config
 
-#: Constructor options that only the Rust execution paths honor. The
-#: process-pool engines in ``parga.parallel`` use a fixed operator pipeline
-#: (tournament selection, blend crossover, Gaussian mutation) and have no
-#: equivalent of the advanced restart/local-search/immigrant settings.
-#: ``early_stopping`` and ``mutation_rate_end`` are coordinator-loop concerns
-#: that the process-pool engines implement directly, so they are forwarded
-#: rather than dropped.
-RUST_ONLY_OPTIONS = (
-    "crossover_method",
-    "mutation_method",
-    "selection_method",
-    "restart_on_stagnation",
-    "local_search_iters",
-    "random_immigrants",
-)
+#: Constructor options that only the Rust execution paths honor, mapped to the
+#: strategies that actually apply them. The process-pool engines in
+#: ``parga.parallel`` use a fixed operator pipeline (tournament selection,
+#: blend crossover, Gaussian mutation), so no strategy-specific operator
+#: override reaches them. The operator overrides do reach both Rust paths
+#: through their ``set_*`` setters, but ``restart_on_stagnation``,
+#: ``local_search_iters`` and ``random_immigrants`` are single-population
+#: ``GaConfig`` settings that the low-level ``IslandModel`` binding does not
+#: accept — only the ``rust`` strategy applies them.
+#:
+#: ``early_stopping`` and ``mutation_rate_end`` are absent because they are
+#: forwarded to the single-population Rust path and to both process-pool
+#: engines rather than dropped.
+OPTION_SUPPORTED_STRATEGIES = {
+    "crossover_method": ("rust", "rust_island"),
+    "mutation_method": ("rust", "rust_island"),
+    "selection_method": ("rust", "rust_island"),
+    "restart_on_stagnation": ("rust",),
+    "local_search_iters": ("rust",),
+    "random_immigrants": ("rust",),
+}
 
-_PARALLEL_STRATEGIES = ("parallel", "parallel_island")
+#: Names of the options in :data:`OPTION_SUPPORTED_STRATEGIES`. None of them
+#: reach the process-pool strategies.
+RUST_ONLY_OPTIONS = tuple(OPTION_SUPPORTED_STRATEGIES)
 
 
 class GAResult:
@@ -126,14 +134,26 @@ class GA:
         verbose: Print strategy selection info (default: False).
 
     Note:
-        `early_stopping` and `mutation_rate_end` are honored on every
-        execution path. The operator overrides (`crossover_method`,
-        `mutation_method`, `selection_method`) and the remaining advanced
-        settings (`restart_on_stagnation`, `local_search_iters`,
-        `random_immigrants`) are only applied on the Rust execution paths,
-        because the process-pool paths use a fixed operator pipeline;
-        `run()` emits a `UserWarning` naming any such option it is about to
-        ignore. Pass `parallel=False` to force a Rust path.
+        Not every option reaches every strategy, so `run()` emits a
+        `UserWarning` naming each supplied option the selected strategy will
+        ignore, together with the strategies that do apply it:
+
+        - `crossover_method`, `mutation_method` and `selection_method` are
+          applied by `rust` and `rust_island`; the process-pool paths use a
+          fixed operator pipeline.
+        - `restart_on_stagnation`, `local_search_iters` and
+          `random_immigrants` are applied by `rust` only. They are
+          single-population settings that the low-level `IslandModel`
+          binding does not accept, so `islands > 1` drops them even with
+          `parallel=False`.
+
+        `early_stopping` and `mutation_rate_end` are applied by `rust`,
+        `parallel` and `parallel_island`, and are not part of that warning.
+        The `rust_island` path does not accept them either, so `islands > 1`
+        with `parallel=False` drops them without a warning today.
+
+        Pass `islands=1, parallel=False` to force the `rust` strategy, which
+        applies every option.
 
     Example:
         >>> # Simple usage - auto-selects best strategy
@@ -306,20 +326,24 @@ class GA:
             return "rust"
 
     def _warn_if_options_ignored(self) -> None:
-        """Warn when the selected strategy silently drops Rust-only options."""
-        if self._strategy not in _PARALLEL_STRATEGIES:
-            return
-
-        ignored = [name for name in RUST_ONLY_OPTIONS if getattr(self, name) is not None]
+        """Warn when the selected strategy silently drops configured options."""
+        ignored = [
+            name
+            for name, supported in OPTION_SUPPORTED_STRATEGIES.items()
+            if getattr(self, name) is not None and self._strategy not in supported
+        ]
         if not ignored:
             return
 
+        details = ", ".join(
+            f"{name} (applied only by: {', '.join(OPTION_SUPPORTED_STRATEGIES[name])})"
+            for name in ignored
+        )
         warnings.warn(
-            f"The '{self._strategy}' strategy ignores these options: "
-            f"{', '.join(ignored)}. They are only honored by the Rust execution "
-            "paths ('rust' / 'rust_island'), which use a configurable operator "
-            "pipeline; the process-pool paths use a fixed one. Pass "
-            "parallel=False to force a Rust path and have them applied.",
+            f"The '{self._strategy}' strategy ignores these options: {details}. "
+            "Select one of the strategies listed for an option to have it "
+            "applied — for example islands=1 with parallel=False forces the "
+            "'rust' strategy, which applies all of them.",
             UserWarning,
             stacklevel=3,
         )
@@ -330,8 +354,9 @@ class GA:
         Automatically selects the optimal execution strategy based on
         fitness function cost and configuration.
 
-        Emits a :class:`UserWarning` naming any Rust-only option that the
-        selected process-pool strategy will ignore.
+        Emits a :class:`UserWarning` naming any configured option that the
+        selected strategy will ignore, along with the strategies that apply
+        it.
 
         Returns:
             GAResult with best solution, fitness history, and strategy used.
