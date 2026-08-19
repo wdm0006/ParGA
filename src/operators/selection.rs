@@ -209,8 +209,8 @@ fn truncation_selection<G: Genome + Clone>(
         return Vec::new();
     }
 
-    let cutoff = ((individuals.len() as f64) * ratio.clamp(0.1, 1.0)).ceil() as usize;
-    let top = &individuals[..cutoff.min(individuals.len())];
+    let cutoff = (((individuals.len() as f64) * ratio).ceil() as usize).clamp(1, individuals.len());
+    let top = &individuals[..cutoff];
 
     (0..count).map(|i| top[i % top.len()].clone()).collect()
 }
@@ -322,6 +322,66 @@ mod tests {
         let pop = create_test_population();
         let selected = truncation_selection(&pop, 5, 0.5);
         assert_eq!(selected.len(), 5);
+    }
+
+    /// Builds `size` individuals already ordered best-first, with each genome
+    /// tagging its own rank so selections can be identified exactly.
+    fn create_ranked_population(size: usize) -> Population<RealGenome> {
+        let individuals = (0..size)
+            .map(|i| Individual {
+                genome: RealGenome::new(vec![i as f64]),
+                fitness: Some(-(i as f64)),
+            })
+            .collect();
+        Population::from_individuals(individuals)
+    }
+
+    fn selected_ranks(selected: &[Individual<RealGenome>]) -> Vec<usize> {
+        selected
+            .iter()
+            .map(|ind| ind.genome.genes()[0] as usize)
+            .collect()
+    }
+
+    #[test]
+    fn test_truncation_selection_honors_ratio_below_ten_percent() {
+        let pop = create_ranked_population(100);
+        let selected = truncation_selection(&pop, 5, 0.01);
+
+        // ceil(100 * 0.01) == 1, so every parent is the single best individual.
+        assert_eq!(selected_ranks(&selected), vec![0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_truncation_selection_cycles_exact_cutoff_below_ten_percent() {
+        let pop = create_ranked_population(40);
+        let selected = truncation_selection(&pop, 5, 0.05);
+
+        // ceil(40 * 0.05) == 2, so selection cycles over the top two only.
+        assert_eq!(selected_ranks(&selected), vec![0, 1, 0, 1, 0]);
+    }
+
+    #[test]
+    fn test_truncation_selection_keeps_at_least_one_eligible_individual() {
+        let pop = create_ranked_population(100);
+        // ceil() of a vanishingly small positive share still rounds up to one.
+        let selected = truncation_selection(&pop, 4, 1e-9);
+
+        assert_eq!(selected_ranks(&selected), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_truncation_selection_degenerate_ratios_stay_non_empty() {
+        let pop = create_ranked_population(3);
+
+        // Rust callers can construct any ratio; a non-empty population must
+        // still yield a non-empty eligible set rather than dividing by zero.
+        for ratio in [0.0, -1.0, f64::NAN] {
+            assert_eq!(
+                selected_ranks(&truncation_selection(&pop, 2, ratio)),
+                vec![0, 0]
+            );
+        }
     }
 
     #[test]
