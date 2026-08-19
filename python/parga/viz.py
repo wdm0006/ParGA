@@ -45,7 +45,7 @@ def _check_matplotlib():
     if not HAS_MATPLOTLIB:
         raise ImportError(
             "matplotlib is required for visualization. "
-            "Install it with: pip install matplotlib"
+            'Install it with: pip install "parga[viz]"'
         )
 
 
