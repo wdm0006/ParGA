@@ -920,7 +920,7 @@ class TestFacade:
 
     @pytest.mark.parametrize("islands,strategy", [(1, "rust"), (2, "rust_island")])
     def test_rust_path_does_not_warn_about_options(self, islands, strategy):
-        """The Rust paths honor the advanced options, so they must not warn."""
+        """Both Rust paths apply the operator overrides, so they must not warn."""
         ga = GA(
             simple_fitness,
             genome_length=2,
@@ -939,6 +939,85 @@ class TestFacade:
             result = ga.run()
 
         assert result.strategy == strategy
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+    def test_rust_island_does_not_warn_about_operator_overrides(self):
+        """`rust_island` applies all three operator overrides, so it must not warn."""
+        ga = GA(
+            simple_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=2,
+            islands=2,
+            migration_interval=1,
+            migration_count=1,
+            parallel=False,
+            seed=42,
+            crossover_method=CrossoverMethod.arithmetic(),
+            mutation_method=MutationMethod.uniform(),
+            selection_method=SelectionMethod.rank(),
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = ga.run()
+
+        assert result.strategy == "rust_island"
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+    def test_rust_island_warns_about_single_population_options(self):
+        """`rust_island` cannot apply the single-population settings, so it warns."""
+        ga = GA(
+            simple_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=2,
+            islands=2,
+            migration_interval=1,
+            migration_count=1,
+            parallel=False,
+            seed=42,
+            selection_method=SelectionMethod.rank(),
+            restart_on_stagnation=3,
+            local_search_iters=2,
+            random_immigrants=1,
+        )
+        with pytest.warns(UserWarning) as record:
+            result = ga.run()
+
+        assert result.strategy == "rust_island"
+        messages = [str(w.message) for w in record if issubclass(w.category, UserWarning)]
+        assert len(messages) == 1
+        message = messages[0]
+        assert "rust_island" in message
+        for name in ("restart_on_stagnation", "local_search_iters", "random_immigrants"):
+            assert name in message
+        # The operator overrides ARE applied on this path, so they must not be named.
+        assert "selection_method" not in message
+
+    @pytest.mark.parametrize(
+        "option,value",
+        [
+            ("restart_on_stagnation", 3),
+            ("local_search_iters", 2),
+            ("random_immigrants", 1),
+        ],
+    )
+    def test_rust_single_population_applies_advanced_options(self, option, value):
+        """The `rust` strategy applies each advanced setting, so it must not warn."""
+        ga = GA(
+            simple_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=2,
+            parallel=False,
+            seed=42,
+            **{option: value},
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = ga.run()
+
+        assert result.strategy == "rust"
         assert [w for w in record if issubclass(w.category, UserWarning)] == []
 
     def test_best_genes_returns_copy(self):
