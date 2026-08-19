@@ -7,7 +7,7 @@ This directory contains four scientific optimization case studies demonstrating 
 Run any example:
 ```bash
 # Install dependencies
-pip install parga matplotlib numpy
+pip install "parga[viz]"
 
 # Run examples
 python examples/lennard_jones_clusters.py
@@ -256,9 +256,9 @@ from parga.viz import (
 )
 ```
 
-Install matplotlib to enable visualization:
+Install the visualization extra to enable these plots:
 ```bash
-pip install matplotlib
+pip install "parga[viz]"
 ```
 
 ---
