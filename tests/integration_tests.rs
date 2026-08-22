@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use parga::{
     fitness::fitness_fn,
+    island::{IslandConfigBuilder, IslandResult},
     operators::crossover::{CrossoverOperator, PermutationCrossover, RealCrossover},
     operators::mutation::{MutationOperator, PermutationMutation},
 };
@@ -655,4 +656,109 @@ fn test_local_search_iters_is_skipped_for_binary_genomes() {
         evaluated < 150,
         "local search should not evaluate anything for binary genomes, saw {evaluated} evaluations"
     );
+}
+
+fn island_config_builder(generations: usize) -> IslandConfigBuilder {
+    let mut builder = IslandConfig::builder();
+    builder
+        .num_islands(2)
+        .island_population(10)
+        .genome_length(3)
+        .generations(generations)
+        .migration_interval(2)
+        .migration_count(2)
+        .seed(7);
+    builder
+}
+
+#[test]
+fn test_island_run_reports_generations_actually_evolved() {
+    for generations in [3, 7] {
+        let config = island_config_builder(generations).build().unwrap();
+        let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere).unwrap();
+        let result = model.run();
+
+        assert_eq!(result.generations, generations);
+        assert_eq!(result.fitness_history.len(), generations + 1);
+    }
+}
+
+#[test]
+fn test_island_early_stopping_shortens_run() {
+    let config = island_config_builder(10).early_stopping(1).build().unwrap();
+
+    // A constant objective makes this deterministic: generation 0 always
+    // improves on -inf, generation 1 always stagnates and trips patience = 1.
+    let mut model: IslandModel<RealGenome, _> =
+        IslandModel::new(config, fitness_fn(|_: &RealGenome| -1.0)).unwrap();
+    let result = model.run();
+
+    assert_eq!(result.generations, 2);
+    assert_eq!(result.fitness_history.len(), result.generations + 1);
+}
+
+#[test]
+fn test_island_without_early_stopping_runs_every_generation() {
+    let config = island_config_builder(10).build().unwrap();
+
+    let mut model: IslandModel<RealGenome, _> =
+        IslandModel::new(config, fitness_fn(|_: &RealGenome| -1.0)).unwrap();
+    let result = model.run();
+
+    assert_eq!(result.generations, 10);
+    assert_eq!(result.fitness_history.len(), 11);
+}
+
+fn seeded_island_run(mutation_rate_end: Option<f64>) -> IslandResult<RealGenome> {
+    let mut builder = island_config_builder(6);
+    builder.mutation_rate(0.5);
+    if let Some(end) = mutation_rate_end {
+        builder.mutation_rate_end(end);
+    }
+    let config = builder.build().unwrap();
+
+    let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere).unwrap();
+    model.run()
+}
+
+#[test]
+fn test_island_mutation_rate_end_identity_reproduces_undecayed_run() {
+    let baseline = seeded_island_run(None);
+    // A final rate equal to the starting rate must consume the same RNG stream
+    // and produce a bit-identical run.
+    let flat = seeded_island_run(Some(0.5));
+
+    assert_eq!(flat.best_fitness.to_bits(), baseline.best_fitness.to_bits());
+    assert_eq!(
+        flat.best_individual.genome.genes(),
+        baseline.best_individual.genome.genes()
+    );
+    assert_eq!(flat.fitness_history, baseline.fitness_history);
+}
+
+#[test]
+fn test_island_mutation_rate_end_changes_the_search() {
+    let baseline = seeded_island_run(None);
+    let decayed = seeded_island_run(Some(0.0));
+
+    assert_ne!(
+        decayed.best_fitness.to_bits(),
+        baseline.best_fitness.to_bits(),
+        "decaying the mutation rate should change the seeded search"
+    );
+}
+
+#[test]
+fn test_island_rejects_invalid_mutation_rate_end() {
+    for bad_rate in [-0.1, 1.5, f64::NAN] {
+        let config = island_config_builder(5)
+            .mutation_rate_end(bad_rate)
+            .build()
+            .unwrap();
+        let error = config.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("mutation_rate_end"),
+            "expected the error to name the parameter, got: {error}"
+        );
+    }
 }

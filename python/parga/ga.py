@@ -52,9 +52,8 @@ from ._validation import validate_ga_config, validate_island_config
 #: ``GaConfig`` settings that the low-level ``IslandModel`` binding does not
 #: accept — only the ``rust`` strategy applies them.
 #:
-#: ``early_stopping`` and ``mutation_rate_end`` are absent because they are
-#: forwarded to the single-population Rust path and to both process-pool
-#: engines rather than dropped.
+#: ``early_stopping`` and ``mutation_rate_end`` are absent because every
+#: strategy applies them rather than dropping them.
 OPTION_SUPPORTED_STRATEGIES = {
     "crossover_method": ("rust", "rust_island"),
     "mutation_method": ("rust", "rust_island"),
@@ -147,10 +146,8 @@ class GA:
           binding does not accept, so `islands > 1` drops them even with
           `parallel=False`.
 
-        `early_stopping` and `mutation_rate_end` are applied by `rust`,
-        `parallel` and `parallel_island`, and are not part of that warning.
-        The `rust_island` path does not accept them either, so `islands > 1`
-        with `parallel=False` drops them without a warning today.
+        `early_stopping` and `mutation_rate_end` are applied by every
+        strategy, so they are never part of that warning.
 
         Pass `islands=1, parallel=False` to force the `rust` strategy, which
         applies every option.
@@ -466,6 +463,8 @@ class GA:
             lower_bounds=self.lower_bounds,
             upper_bounds=self.upper_bounds,
             seed=self.seed,
+            early_stopping=self.early_stopping,
+            mutation_rate_end=self.mutation_rate_end,
         )
         if self.crossover_method is not None:
             ga.set_crossover(self.crossover_method)
