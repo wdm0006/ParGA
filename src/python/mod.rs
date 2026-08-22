@@ -687,6 +687,9 @@ impl PyIslandModel {
     ///     lower_bounds: Lower bounds for each gene (optional).
     ///     upper_bounds: Upper bounds for each gene (optional).
     ///     seed: Random seed for reproducibility (optional).
+    ///     early_stopping: Stop after this many generations without improvement
+    ///         (optional).
+    ///     mutation_rate_end: Final mutation rate for linear decay (optional).
     #[new]
     #[pyo3(signature = (
         fitness_fn,
@@ -703,7 +706,9 @@ impl PyIslandModel {
         tournament_size = 3,
         lower_bounds = None,
         upper_bounds = None,
-        seed = None
+        seed = None,
+        early_stopping = None,
+        mutation_rate_end = None
     ))]
     fn new(
         fitness_fn: PyObject,
@@ -721,6 +726,8 @@ impl PyIslandModel {
         lower_bounds: Option<Vec<f64>>,
         upper_bounds: Option<Vec<f64>>,
         seed: Option<u64>,
+        early_stopping: Option<usize>,
+        mutation_rate_end: Option<f64>,
     ) -> PyResult<Self> {
         let topo = topology.map(|t| t.inner).unwrap_or(MigrationTopology::Ring);
 
@@ -746,6 +753,12 @@ impl PyIslandModel {
         }
         if let Some(s) = seed {
             builder.seed(s);
+        }
+        if let Some(es) = early_stopping {
+            builder.early_stopping(es);
+        }
+        if let Some(mre) = mutation_rate_end {
+            builder.mutation_rate_end(mre);
         }
 
         let config = builder

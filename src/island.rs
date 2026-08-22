@@ -82,6 +82,16 @@ pub struct IslandConfig {
     /// Random seed for reproducibility.
     #[builder(default = "None", setter(strip_option))]
     pub seed: Option<u64>,
+
+    /// Stop early if the best fitness across all islands hasn't improved for
+    /// this many generations. None means no early stopping (run all generations).
+    #[builder(default = "None", setter(strip_option))]
+    pub early_stopping: Option<usize>,
+
+    /// Final mutation rate for linear decay. If set, the mutation rate linearly
+    /// interpolates from `mutation_rate` to `mutation_rate_end` over the generations.
+    #[builder(default = "None", setter(strip_option))]
+    pub mutation_rate_end: Option<f64>,
 }
 
 impl IslandConfig {
@@ -132,6 +142,9 @@ impl IslandConfig {
             return Err(crate::Error::Config(
                 "migration_count must be between 1 and island_population".into(),
             ));
+        }
+        if let Some(rate) = self.mutation_rate_end {
+            crate::validation::validate_rate("mutation_rate_end", rate)?;
         }
         Ok(())
     }
@@ -297,11 +310,27 @@ where
         self.evaluate_all_islands();
         self.record_best_fitness();
 
-        for gen in 0..self.config.generations {
-            self.generation = gen;
+        let total_gens = self.config.generations;
+        let mutation_rate_start = self.config.mutation_rate;
+        let mutation_rate_end = self.config.mutation_rate_end;
+        let early_stopping = self.config.early_stopping;
+        let mut stagnation_count: usize = 0;
+        let mut best_so_far = f64::NEG_INFINITY;
+
+        for gen in 0..total_gens {
+            // Adaptive mutation rate: linear interpolation. The config is shared
+            // by reference across the island fan-out, so the rate is passed down
+            // explicitly instead of being written back into it.
+            let mutation_rate = match mutation_rate_end {
+                Some(end_rate) => {
+                    let t = gen as f64 / total_gens.max(1) as f64;
+                    mutation_rate_start + t * (end_rate - mutation_rate_start)
+                }
+                None => mutation_rate_start,
+            };
 
             // Evolve each island
-            self.evolve_islands();
+            self.evolve_islands(mutation_rate);
 
             // Evaluate fitness
             self.evaluate_all_islands();
@@ -313,6 +342,28 @@ where
             if (gen + 1) % self.config.migration_interval == 0 {
                 self.migrate();
             }
+
+            // The generation is fully recorded, so count it before any break.
+            self.generation += 1;
+
+            let current_best = self
+                .fitness_history
+                .last()
+                .copied()
+                .unwrap_or(f64::NEG_INFINITY);
+
+            if current_best > best_so_far + 1e-12 {
+                best_so_far = current_best;
+                stagnation_count = 0;
+            } else {
+                stagnation_count += 1;
+            }
+
+            if let Some(patience) = early_stopping {
+                if stagnation_count >= patience {
+                    break;
+                }
+            }
         }
 
         self.result()
@@ -320,7 +371,9 @@ where
 
     /// Runs a single generation on all islands.
     pub fn step(&mut self) {
-        self.evolve_islands();
+        // A single step has no run length to interpolate over, so it always
+        // evolves at the configured starting rate.
+        self.evolve_islands(self.config.mutation_rate);
         self.evaluate_all_islands();
         self.record_best_fitness();
 
@@ -332,7 +385,7 @@ where
     }
 
     /// Evolves all islands for one generation.
-    fn evolve_islands(&mut self) {
+    fn evolve_islands(&mut self, mutation_rate: f64) {
         let (lower, upper) = self.config.bounds();
         let config = &self.config;
         let selection = &self.selection;
@@ -348,7 +401,15 @@ where
                 .zip(self.island_rngs.par_iter_mut())
                 .for_each(|(island, island_rng)| {
                     evolve_population(
-                        island, config, selection, crossover, &mutation, &lower, &upper, island_rng,
+                        island,
+                        config,
+                        selection,
+                        crossover,
+                        &mutation,
+                        mutation_rate,
+                        &lower,
+                        &upper,
+                        island_rng,
                     );
                 });
         }
@@ -357,7 +418,15 @@ where
         {
             for (island, island_rng) in self.islands.iter_mut().zip(self.island_rngs.iter_mut()) {
                 evolve_population(
-                    island, config, selection, crossover, &mutation, &lower, &upper, island_rng,
+                    island,
+                    config,
+                    selection,
+                    crossover,
+                    &mutation,
+                    mutation_rate,
+                    &lower,
+                    &upper,
+                    island_rng,
                 );
             }
         }
@@ -668,6 +737,7 @@ fn evolve_population<G>(
     selection: &SelectionOperator,
     crossover: &CrossoverOperator<G>,
     mutation: &MutationOperator<G>,
+    mutation_rate: f64,
     lower: &[f64],
     upper: &[f64],
     rng: &mut StdRng,
@@ -707,20 +777,8 @@ fn evolve_population<G>(
             let mut ind1 = Individual::new(child1);
             let mut ind2 = Individual::new(child2);
 
-            mutation.mutate(
-                &mut ind1.genome,
-                config.mutation_rate,
-                lower,
-                upper,
-                &mut *rng,
-            );
-            mutation.mutate(
-                &mut ind2.genome,
-                config.mutation_rate,
-                lower,
-                upper,
-                &mut *rng,
-            );
+            mutation.mutate(&mut ind1.genome, mutation_rate, lower, upper, &mut *rng);
+            mutation.mutate(&mut ind2.genome, mutation_rate, lower, upper, &mut *rng);
 
             new_individuals.push(ind1);
             if new_individuals.len() < config.island_population {
@@ -728,13 +786,7 @@ fn evolve_population<G>(
             }
         } else if !chunk.is_empty() {
             let mut ind = chunk[0].clone();
-            mutation.mutate(
-                &mut ind.genome,
-                config.mutation_rate,
-                lower,
-                upper,
-                &mut *rng,
-            );
+            mutation.mutate(&mut ind.genome, mutation_rate, lower, upper, &mut *rng);
             new_individuals.push(ind);
         }
     }
