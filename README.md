@@ -30,7 +30,7 @@ pip install parga
 
 ```toml
 [dependencies]
-parga = "0.1"
+parga = "0.2"
 ```
 
 ## Quick Start
