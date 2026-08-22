@@ -95,6 +95,14 @@ def rule_of_mixtures(fractions: np.ndarray, element_values: np.ndarray) -> float
     return np.sum(fractions * element_values)
 
 
+GAS_CONSTANT = 8.314  # J/mol/K
+
+# Miracle & Senkov (2017) define a high-entropy alloy as one whose configurational
+# mixing entropy is at least 1.5 R. Note that this is unreachable for a four-component
+# system: an equiatomic quaternary tops out at R ln 4 = 11.53 J/mol/K.
+HEA_ENTROPY_THRESHOLD = 1.5 * GAS_CONSTANT  # 12.47 J/mol/K
+
+
 def mixing_entropy(fractions: np.ndarray) -> float:
     """Calculate configurational mixing entropy (J/mol/K).
 
@@ -138,7 +146,7 @@ def calculate_properties(
 
     # Mixing entropy
     s_mix = mixing_entropy(fractions)
-    is_hea = s_mix > 11.5  # High-entropy alloy threshold (~1.5R)
+    is_hea = s_mix >= HEA_ENTROPY_THRESHOLD
 
     # Solid solution strengthening (simplified model)
     # Higher entropy -> more lattice distortion -> higher strength
