@@ -762,3 +762,54 @@ fn test_island_rejects_invalid_mutation_rate_end() {
         );
     }
 }
+
+#[test]
+fn test_island_and_serial_report_the_same_generation_count() {
+    for generations in [3, 7] {
+        let island_config = island_config_builder(generations).build().unwrap();
+        let mut island: IslandModel<RealGenome, _> =
+            IslandModel::new(island_config, Sphere).unwrap();
+        let island_result = island.run();
+
+        let serial_config = GaConfig::builder()
+            .population_size(20)
+            .genome_length(3)
+            .generations(generations)
+            .seed(7)
+            .build()
+            .unwrap();
+        let mut serial = GeneticAlgorithm::new(serial_config, Sphere).unwrap();
+        let serial_result = serial.run();
+
+        assert_eq!(island_result.generations, serial_result.generations);
+        assert_eq!(island_result.generations, generations);
+        assert_eq!(
+            island_result.fitness_history.len(),
+            serial_result.fitness_history.len()
+        );
+    }
+}
+
+#[test]
+fn test_island_run_after_step_does_not_rewind_the_generation_counter() {
+    let steps = 3;
+    let generations = 4;
+    let config = island_config_builder(generations).build().unwrap();
+    let mut model: IslandModel<RealGenome, _> = IslandModel::new(config, Sphere).unwrap();
+
+    for _ in 0..steps {
+        model.step();
+    }
+    assert_eq!(model.generation(), steps);
+
+    let result = model.run();
+
+    // `run()` must continue from where `step()` left off, not overwrite the
+    // counter with its own loop index.
+    assert_eq!(model.generation(), steps + generations);
+    assert_eq!(result.generations, steps + generations);
+    assert!(
+        result.generations >= steps,
+        "run() must not rewind below the generations already evolved"
+    );
+}
