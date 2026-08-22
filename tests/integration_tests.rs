@@ -808,8 +808,4 @@ fn test_island_run_after_step_does_not_rewind_the_generation_counter() {
     // counter with its own loop index.
     assert_eq!(model.generation(), steps + generations);
     assert_eq!(result.generations, steps + generations);
-    assert!(
-        result.generations >= steps,
-        "run() must not rewind below the generations already evolved"
-    );
 }
