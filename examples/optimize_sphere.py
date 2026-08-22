@@ -54,7 +54,7 @@ def main():
     result = ga.run()
     elapsed = time.time() - start
 
-    print(f"Best fitness: {result.best_fitness:.6f}")
+    print(f"Best value found: {-result.best_fitness:.6f}")
     print(f"Converged: {result.converged}")
     print(f"Time: {elapsed:.3f}s")
     print(f"Solution (first 5 dims): {result.best_genes()[:5]}")
@@ -87,10 +87,10 @@ def main():
     result = island_ga.run()
     elapsed = time.time() - start
 
-    print(f"Best fitness: {result.best_fitness:.6f}")
+    print(f"Best value found: {-result.best_fitness:.6f}")
     print(f"Converged: {result.converged}")
     print(f"Time: {elapsed:.3f}s")
-    print(f"Island best fitnesses: {result.island_best_fitness()}")
+    print(f"Island best values: {[-f for f in result.island_best_fitness()]}")
     print(f"Solution (first 5 dims): {result.best_genes()[:5]}")
 
     # Compare topologies
@@ -116,7 +116,7 @@ def main():
         )
         result = island_ga.run()
         elapsed = time.time() - start
-        print(f"{name:20s}: fitness = {result.best_fitness:10.6f}, time = {elapsed:.3f}s")
+        print(f"{name:20s}: best value = {-result.best_fitness:10.6f}, time = {elapsed:.3f}s")
 
 
 if __name__ == "__main__":

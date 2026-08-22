@@ -52,7 +52,7 @@ def main():
     result = island_ga.run()
     elapsed = time.time() - start
 
-    print(f"Best fitness: {result.best_fitness:.6f}")
+    print(f"Best value found: {-result.best_fitness:.6f}")
     print("(Optimal is 0.0, closer to 0 is better)")
     print(f"Time: {elapsed:.3f}s")
     print(f"Best solution: {result.best_genes()}")
@@ -81,7 +81,7 @@ def main():
         result = island_ga.run()
         elapsed = time.time() - start
         print(
-            f"{num_islands:2d} islands: fitness = {result.best_fitness:10.4f}, "
+            f"{num_islands:2d} islands: best value = {-result.best_fitness:10.4f}, "
             f"time = {elapsed:.3f}s"
         )
 
