@@ -82,6 +82,16 @@ pub struct IslandConfig {
     /// Random seed for reproducibility.
     #[builder(default = "None", setter(strip_option))]
     pub seed: Option<u64>,
+
+    /// Stop early if the best fitness across all islands hasn't improved for
+    /// this many generations. None means no early stopping (run all generations).
+    #[builder(default = "None", setter(strip_option))]
+    pub early_stopping: Option<usize>,
+
+    /// Final mutation rate for linear decay. If set, the mutation rate linearly
+    /// interpolates from `mutation_rate` to `mutation_rate_end` over the generations.
+    #[builder(default = "None", setter(strip_option))]
+    pub mutation_rate_end: Option<f64>,
 }
 
 impl IslandConfig {
@@ -132,6 +142,9 @@ impl IslandConfig {
             return Err(crate::Error::Config(
                 "migration_count must be between 1 and island_population".into(),
             ));
+        }
+        if let Some(rate) = self.mutation_rate_end {
+            crate::validation::validate_rate("mutation_rate_end", rate)?;
         }
         Ok(())
     }
@@ -297,11 +310,27 @@ where
         self.evaluate_all_islands();
         self.record_best_fitness();
 
-        for gen in 0..self.config.generations {
-            self.generation = gen;
+        let total_gens = self.config.generations;
+        let mutation_rate_start = self.config.mutation_rate;
+        let mutation_rate_end = self.config.mutation_rate_end;
+        let early_stopping = self.config.early_stopping;
+        let mut stagnation_count: usize = 0;
+        let mut best_so_far = f64::NEG_INFINITY;
+
+        for gen in 0..total_gens {
+            // Adaptive mutation rate: linear interpolation. The config is shared
+            // by reference across the island fan-out, so the rate is passed down
+            // explicitly instead of being written back into it.
+            let mutation_rate = match mutation_rate_end {
+                Some(end_rate) => {
+                    let t = gen as f64 / total_gens.max(1) as f64;
+                    mutation_rate_start + t * (end_rate - mutation_rate_start)
+                }
+                None => mutation_rate_start,
+            };
 
             // Evolve each island
-            self.evolve_islands();
+            self.evolve_islands(mutation_rate);
 
             // Evaluate fitness
             self.evaluate_all_islands();
@@ -313,6 +342,28 @@ where
             if (gen + 1) % self.config.migration_interval == 0 {
                 self.migrate();
             }
+
+            // The generation is fully recorded, so count it before any break.
+            self.generation += 1;
+
+            let current_best = self
+                .fitness_history
+                .last()
+                .copied()
+                .unwrap_or(f64::NEG_INFINITY);
+
+            if current_best > best_so_far + 1e-12 {
+                best_so_far = current_best;
+                stagnation_count = 0;
+            } else {
+                stagnation_count += 1;
+            }
+
+            if let Some(patience) = early_stopping {
+                if stagnation_count >= patience {
+                    break;
+                }
+            }
         }
 
         self.result()
@@ -320,7 +371,9 @@ where
 
     /// Runs a single generation on all islands.
     pub fn step(&mut self) {
-        self.evolve_islands();
+        // A single step has no run length to interpolate over, so it always
+        // evolves at the configured starting rate.
+        self.evolve_islands(self.config.mutation_rate);
         self.evaluate_all_islands();
         self.record_best_fitness();
 
@@ -332,7 +385,7 @@ where
     }
 
     /// Evolves all islands for one generation.
-    fn evolve_islands(&mut self) {
+    fn evolve_islands(&mut self, mutation_rate: f64) {
         let (lower, upper) = self.config.bounds();
         let config = &self.config;
         let selection = &self.selection;
@@ -348,7 +401,15 @@ where
                 .zip(self.island_rngs.par_iter_mut())
                 .for_each(|(island, island_rng)| {
                     evolve_population(
-                        island, config, selection, crossover, &mutation, &lower, &upper, island_rng,
+                        island,
+                        config,
+                        selection,
+                        crossover,
+                        &mutation,
+                        mutation_rate,
+                        &lower,
+                        &upper,
+                        island_rng,
                     );
                 });
         }
@@ -357,7 +418,15 @@ where
         {
             for (island, island_rng) in self.islands.iter_mut().zip(self.island_rngs.iter_mut()) {
                 evolve_population(
-                    island, config, selection, crossover, &mutation, &lower, &upper, island_rng,
+                    island,
+                    config,
+                    selection,
+                    crossover,
+                    &mutation,
+                    mutation_rate,
+                    &lower,
+                    &upper,
+                    island_rng,
                 );
             }
         }
@@ -668,6 +737,7 @@ fn evolve_population<G>(
     selection: &SelectionOperator,
     crossover: &CrossoverOperator<G>,
     mutation: &MutationOperator<G>,
+    mutation_rate: f64,
     lower: &[f64],
     upper: &[f64],
     rng: &mut StdRng,
@@ -707,20 +777,8 @@ fn evolve_population<G>(
             let mut ind1 = Individual::new(child1);
             let mut ind2 = Individual::new(child2);
 
-            mutation.mutate(
-                &mut ind1.genome,
-                config.mutation_rate,
-                lower,
-                upper,
-                &mut *rng,
-            );
-            mutation.mutate(
-                &mut ind2.genome,
-                config.mutation_rate,
-                lower,
-                upper,
-                &mut *rng,
-            );
+            mutation.mutate(&mut ind1.genome, mutation_rate, lower, upper, &mut *rng);
+            mutation.mutate(&mut ind2.genome, mutation_rate, lower, upper, &mut *rng);
 
             new_individuals.push(ind1);
             if new_individuals.len() < config.island_population {
@@ -728,13 +786,7 @@ fn evolve_population<G>(
             }
         } else if !chunk.is_empty() {
             let mut ind = chunk[0].clone();
-            mutation.mutate(
-                &mut ind.genome,
-                config.mutation_rate,
-                lower,
-                upper,
-                &mut *rng,
-            );
+            mutation.mutate(&mut ind.genome, mutation_rate, lower, upper, &mut *rng);
             new_individuals.push(ind);
         }
     }
@@ -747,6 +799,7 @@ mod tests {
     use super::*;
     use crate::fitness::benchmarks::Sphere;
     use crate::genome::RealGenome;
+    use std::collections::BTreeSet;
 
     #[test]
     fn test_island_config() {
@@ -863,16 +916,13 @@ mod tests {
         assert_eq!(a.island_best_fitness, b.island_best_fitness);
     }
 
-    /// Builds a model whose islands are smaller than `island_population`, so
-    /// migrants survive the post-migration truncation and the random
-    /// destination choice is observable.
-    fn random_migration_model(seed: u64) -> IslandModel<RealGenome, Sphere> {
+    fn migration_model(topology: MigrationTopology, seed: u64) -> IslandModel<RealGenome, Sphere> {
         let config = IslandConfig::builder()
             .num_islands(4)
             .island_population(20)
             .migration_count(2)
             .genome_length(2)
-            .topology(MigrationTopology::Random)
+            .topology(topology)
             .seed(seed)
             .build()
             .unwrap();
@@ -882,8 +932,10 @@ mod tests {
             .map(|island| {
                 let individuals = (0..3)
                     .map(|i| {
-                        let tag = f64::from(island * 10 + i);
-                        Individual::with_fitness(RealGenome::new(vec![tag, tag]), -tag)
+                        Individual::with_fitness(
+                            RealGenome::new(vec![f64::from(island), f64::from(i)]),
+                            100.0 - f64::from(i),
+                        )
                     })
                     .collect();
                 Population::from_individuals(individuals)
@@ -892,33 +944,72 @@ mod tests {
         model
     }
 
-    /// The genes of every individual on every island, which identifies exactly
-    /// which migrant landed where.
-    fn island_contents(model: &IslandModel<RealGenome, Sphere>) -> Vec<Vec<Vec<f64>>> {
+    fn migration_routes(
+        model: &IslandModel<RealGenome, Sphere>,
+    ) -> BTreeSet<(usize, usize, usize)> {
         model
             .islands
             .iter()
-            .map(|island| {
-                island
-                    .individuals()
-                    .iter()
-                    .map(|ind| ind.genome.genes().to_vec())
-                    .collect()
+            .enumerate()
+            .flat_map(|(destination, island)| {
+                island.individuals().iter().filter_map(move |individual| {
+                    let genes = individual.genome.genes();
+                    let source = genes[0] as usize;
+                    let marker = genes[1] as usize;
+                    (source != destination).then_some((source, destination, marker))
+                })
             })
             .collect()
     }
 
     #[test]
-    fn test_random_topology_migration_is_deterministic_with_seed() {
-        let mut a = random_migration_model(777);
-        let mut b = random_migration_model(777);
-        a.migrate();
-        b.migrate();
+    fn test_migration_topologies_route_migrants() {
+        let static_topologies = [
+            MigrationTopology::Ring,
+            MigrationTopology::FullyConnected,
+            MigrationTopology::Star,
+            MigrationTopology::Ladder,
+        ];
 
-        let contents_a = island_contents(&a);
-        // Migrants actually moved, otherwise this asserts nothing.
-        assert_ne!(contents_a, island_contents(&random_migration_model(777)));
-        assert_eq!(contents_a, island_contents(&b));
+        for topology in static_topologies {
+            let mut model = migration_model(topology, 777);
+            model.migrate();
+
+            let observed: BTreeSet<_> = migration_routes(&model)
+                .into_iter()
+                .map(|(source, destination, _)| (source, destination))
+                .collect();
+            let expected: BTreeSet<_> = (0..model.config.num_islands)
+                .flat_map(|source| {
+                    topology
+                        .destinations(source, model.config.num_islands)
+                        .into_iter()
+                        .map(move |destination| (source, destination))
+                })
+                .collect();
+
+            assert_eq!(observed, expected, "topology: {topology:?}");
+        }
+
+        let mut first = migration_model(MigrationTopology::Random, 777);
+        let mut second = migration_model(MigrationTopology::Random, 777);
+        first.migrate();
+        second.migrate();
+
+        let routes = migration_routes(&first);
+        for source in 0..first.config.num_islands {
+            for marker in 0..first.config.migration_count {
+                assert!(
+                    routes
+                        .iter()
+                        .any(|&(from, destination, migrant)| from == source
+                            && destination != source
+                            && migrant == marker),
+                    "random migrant {marker} from island {source} did not leave its source"
+                );
+            }
+        }
+        assert_eq!(routes, migration_routes(&second));
     }
 
     #[test]

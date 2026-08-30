@@ -1274,3 +1274,76 @@ class TestFacadeMigrationTopology:
                 migration_topology=MigrationTopology.ring(),
             ).run()
 
+
+class TestRustIslandEngineOptions:
+    """early_stopping and mutation_rate_end on the Rust island strategy."""
+
+    @staticmethod
+    def _island_ga(**kwargs) -> GA:
+        settings = {
+            "fitness_fn": plateau_fitness,
+            "genome_length": 2,
+            "population_size": 8,
+            "generations": 10,
+            "islands": 2,
+            "migration_interval": 1,
+            "migration_count": 1,
+            "parallel": False,
+            "seed": 42,
+        }
+        settings.update(kwargs)
+        return GA(**settings)
+
+    def test_early_stopping_stops_early(self):
+        """A plateaued objective stops before the configured generation count."""
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = self._island_ga(early_stopping=1).run()
+
+        assert result.strategy == "rust_island"
+        assert result.generations < 10
+        # gen 0 improves on -inf, gen 1 stagnates and trips patience=1.
+        assert result.generations == 2
+        assert len(result.fitness_history) == result.generations + 1
+        # Both options are honored now, so nothing may warn about ignoring them.
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+    def test_without_early_stopping_runs_every_generation(self):
+        """Default (None) keeps today's behavior: no early exit."""
+        result = self._island_ga().run()
+
+        assert result.strategy == "rust_island"
+        assert result.generations == 10
+        assert len(result.fitness_history) == 11
+
+    def test_mutation_rate_end_changes_the_search(self):
+        """GA forwards mutation_rate_end, and it changes the search."""
+
+        def run(**kwargs):
+            return self._island_ga(
+                fitness_fn=neg_sphere_objective,
+                genome_length=4,
+                generations=5,
+                bounds=(-5.0, 5.0),
+                mutation_rate=0.5,
+                **kwargs,
+            ).run()
+
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            baseline = run()
+            decayed = run(mutation_rate_end=0.0)
+            # The identity case must reproduce the un-decayed run exactly.
+            flat = run(mutation_rate_end=0.5)
+
+        assert baseline.strategy == "rust_island"
+        assert baseline.best_fitness != decayed.best_fitness
+        assert flat.best_fitness == baseline.best_fitness
+        np.testing.assert_array_equal(flat.best_genes(), baseline.best_genes())
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+    @pytest.mark.parametrize("bad_rate", [-0.1, 1.5, float("nan")])
+    def test_rejects_invalid_mutation_rate_end(self, bad_rate):
+        """mutation_rate_end is validated like every other rate."""
+        with pytest.raises(ValueError, match="mutation_rate_end"):
+            self._island_ga(mutation_rate_end=bad_rate)

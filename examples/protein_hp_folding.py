@@ -65,7 +65,7 @@ DIRECTIONS = [(0, 1), (1, 0), (0, -1), (-1, 0)]
 
 # Standard benchmark sequences from the literature
 BENCHMARK_SEQUENCES = {
-    "seq10": "HPHPPHHPHP",                                       # 10 aa
+    "seq10": "HPHPPHHPHH",                                       # 10 aa
     "seq20": "HPHPPHHPHPPHPHHPPHPH",                              # 20 aa  (Unger & Moult)
     "seq24": "HHPPHPPHPPHPPHPPHPPHPPHH",                          # 24 aa  (Unger & Moult)
     "seq36": "PPPHHPPHHPPPPPHHHHHHHPPHHPPPPHHPPHPP",               # 36 aa  (Yue & Dill)
