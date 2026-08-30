@@ -1218,6 +1218,63 @@ class TestParallelEngineOptions:
         assert baseline.best_fitness != decayed.best_fitness
 
 
+class TestFacadeMigrationTopology:
+    """`GA(islands=N)` is the recommended island API, so it must be able to pick a topology.
+
+    Topology is not cosmetic: on the standard multimodal benchmarks a fully connected
+    topology reaches a better optimum than a ring at the same budget, because a ring slows
+    how fast a good solution reaches the islands that have not found it.
+    """
+
+    @staticmethod
+    def _sphere(genes):
+        return -float(np.sum(np.asarray(genes, dtype=np.float64) ** 2))
+
+    def _run(self, topology, seed=0):
+        kwargs = dict(
+            genome_length=6,
+            bounds=(-5.0, 5.0),
+            population_size=80,
+            generations=20,
+            islands=4,
+            seed=seed,
+            parallel=False,
+        )
+        if topology is not None:
+            kwargs["migration_topology"] = topology
+        return GA(self._sphere, **kwargs).run()
+
+    def test_topology_is_accepted_and_reaches_the_engine(self):
+        """Two different topologies on the same seed must not produce the same run."""
+        ring = self._run(MigrationTopology.ring())
+        full = self._run(MigrationTopology.fully_connected())
+
+        assert ring.best_fitness is not None
+        assert full.best_fitness is not None
+        # Same seed, same budget: if topology were dropped these would be identical.
+        assert ring.best_fitness != full.best_fitness
+
+    def test_default_is_unchanged_when_not_supplied(self):
+        """Omitting the argument must behave exactly as before it existed."""
+        explicit_ring = self._run(MigrationTopology.ring())
+        default = self._run(None)
+        assert default.best_fitness == explicit_ring.best_fitness
+
+    def test_single_population_warns_that_topology_is_ignored(self):
+        """A topology means nothing without islands, and silence would hide that."""
+        with pytest.warns(UserWarning, match="migration_topology"):
+            GA(
+                self._sphere,
+                genome_length=6,
+                bounds=(-5.0, 5.0),
+                population_size=40,
+                generations=5,
+                islands=1,
+                parallel=False,
+                migration_topology=MigrationTopology.ring(),
+            ).run()
+
+
 class TestRustIslandEngineOptions:
     """early_stopping and mutation_rate_end on the Rust island strategy."""
 
