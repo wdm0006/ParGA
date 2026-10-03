@@ -833,7 +833,7 @@ fn test_island_zero_early_stopping_is_rejected() {
 fn test_patience_of_one_is_accepted() {
     let config = patience_config_builder().early_stopping(1).build().unwrap();
     let mut ga = GeneticAlgorithm::<RealGenome, _>::new(config, Sphere).unwrap();
-    assert!(ga.run().generations < 10);
+    assert_eq!(ga.run().generations, 3);
 
     let config = patience_config_builder()
         .restart_on_stagnation(1)
@@ -844,5 +844,5 @@ fn test_patience_of_one_is_accepted() {
 
     let config = island_config_builder(10).early_stopping(1).build().unwrap();
     let mut model = IslandModel::<RealGenome, _>::new(config, Sphere).unwrap();
-    assert!(model.run().generations < 10);
+    assert_eq!(model.run().generations, 2);
 }
