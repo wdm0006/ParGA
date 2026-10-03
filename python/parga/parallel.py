@@ -205,6 +205,7 @@ class ParallelGA:
             lower_bounds=self.lower_bounds,
             upper_bounds=self.upper_bounds,
             mutation_rate_end=mutation_rate_end,
+            early_stopping=early_stopping,
         )
 
     def _create_random_population(self, rng: np.random.Generator) -> list[np.ndarray]:
@@ -548,6 +549,7 @@ class ParallelIslandModel:
             lower_bounds=self.lower_bounds,
             upper_bounds=self.upper_bounds,
             mutation_rate_end=mutation_rate_end,
+            early_stopping=early_stopping,
         )
 
     def run(self) -> ParallelGAResult:

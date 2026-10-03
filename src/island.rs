@@ -143,6 +143,11 @@ impl IslandConfig {
                 "migration_count must be between 1 and island_population".into(),
             ));
         }
+        if self.early_stopping == Some(0) {
+            return Err(crate::Error::Config(
+                "early_stopping must be greater than zero".into(),
+            ));
+        }
         if let Some(rate) = self.mutation_rate_end {
             crate::validation::validate_rate("mutation_rate_end", rate)?;
         }

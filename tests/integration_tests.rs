@@ -762,3 +762,79 @@ fn test_island_rejects_invalid_mutation_rate_end() {
         );
     }
 }
+
+fn patience_config_builder() -> GaConfigBuilder {
+    let mut builder = GaConfig::builder();
+    builder
+        .population_size(20)
+        .genome_length(3)
+        .generations(10)
+        .seed(7);
+    builder
+}
+
+/// Constructs the model, or returns the rejection message. A config that is
+/// wrongly accepted is run, so a missing check fails on the run's real symptom.
+fn construct_and_run(config: GaConfig) -> String {
+    match GeneticAlgorithm::<RealGenome, _>::new(config, Sphere) {
+        Err(error) => error.to_string(),
+        Ok(mut ga) => {
+            let result = ga.run();
+            panic!(
+                "zero patience was accepted; run evolved {} of 10 generations",
+                result.generations
+            );
+        }
+    }
+}
+
+#[test]
+fn test_zero_restart_on_stagnation_is_rejected() {
+    let config = patience_config_builder()
+        .restart_on_stagnation(0)
+        .build()
+        .unwrap();
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("restart_on_stagnation"), "got: {error}");
+    assert!(construct_and_run(config).contains("restart_on_stagnation"));
+}
+
+#[test]
+fn test_zero_early_stopping_is_rejected() {
+    let config = patience_config_builder().early_stopping(0).build().unwrap();
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("early_stopping"), "got: {error}");
+    assert!(construct_and_run(config).contains("early_stopping"));
+}
+
+#[test]
+fn test_island_zero_early_stopping_is_rejected() {
+    let config = island_config_builder(10).early_stopping(0).build().unwrap();
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("early_stopping"), "got: {error}");
+    match IslandModel::<RealGenome, _>::new(config, Sphere) {
+        Err(error) => assert!(error.to_string().contains("early_stopping")),
+        Ok(mut model) => panic!(
+            "zero patience was accepted; run evolved {} of 10 generations",
+            model.run().generations
+        ),
+    }
+}
+
+#[test]
+fn test_patience_of_one_is_accepted() {
+    let config = patience_config_builder().early_stopping(1).build().unwrap();
+    let mut ga = GeneticAlgorithm::<RealGenome, _>::new(config, Sphere).unwrap();
+    assert!(ga.run().generations < 10);
+
+    let config = patience_config_builder()
+        .restart_on_stagnation(1)
+        .build()
+        .unwrap();
+    let mut ga = GeneticAlgorithm::<RealGenome, _>::new(config, Sphere).unwrap();
+    assert_eq!(ga.run().generations, 10);
+
+    let config = island_config_builder(10).early_stopping(1).build().unwrap();
+    let mut model = IslandModel::<RealGenome, _>::new(config, Sphere).unwrap();
+    assert!(model.run().generations < 10);
+}

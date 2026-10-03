@@ -252,6 +252,8 @@ class GA:
             "upper_bounds": self.upper_bounds,
             "mutation_rate_end": mutation_rate_end,
             "random_immigrants": random_immigrants,
+            "early_stopping": early_stopping,
+            "restart_on_stagnation": restart_on_stagnation,
         }
         validate_ga_config(population_size=population_size, **validation_args)
         if islands <= 0:
