@@ -750,6 +750,59 @@ class TestFacade:
                 parallel=parallel,
             )
 
+    def test_zero_restart_on_stagnation_is_rejected_at_construction(self):
+        """Patience 0 used to panic inside run() with a PanicException, a
+        BaseException subclass that ``except Exception`` does not catch."""
+        with pytest.raises(ValueError, match="restart_on_stagnation"):
+            GA(
+                simple_fitness,
+                genome_length=3,
+                population_size=20,
+                generations=5,
+                bounds=(-5, 5),
+                parallel=False,
+                seed=7,
+                restart_on_stagnation=0,
+            )
+
+    @pytest.mark.parametrize(
+        ("parallel", "islands"), [(False, 1), (True, 1), (False, 2), (True, 2)]
+    )
+    def test_zero_early_stopping_is_rejected_at_construction(
+        self, parallel, islands
+    ):
+        """Patience 0 used to truncate every run to a single generation."""
+        with pytest.raises(ValueError, match="early_stopping"):
+            GA(
+                simple_fitness,
+                genome_length=3,
+                population_size=20,
+                generations=10,
+                bounds=(-5, 5),
+                parallel=parallel,
+                islands=islands,
+                migration_interval=1,
+                migration_count=1,
+                seed=7,
+                early_stopping=0,
+            )
+
+    def test_patience_of_one_still_runs(self):
+        settings = {
+            "genome_length": 3,
+            "population_size": 20,
+            "generations": 10,
+            "bounds": (-5, 5),
+            "parallel": False,
+            "seed": 7,
+        }
+        early = GA(simple_fitness, early_stopping=1, **settings).run()
+        assert early.strategy == "rust"
+        assert early.generations == 3
+
+        restart = GA(simple_fitness, restart_on_stagnation=1, **settings).run()
+        assert restart.generations == 10
+
     def test_scalar_bounds_parse_and_run(self):
         """Scalar (lower, upper) bounds parse and produce genes within range."""
         result = GA(
@@ -1144,6 +1197,12 @@ class TestParallelEngineOptions:
         assert baseline.best_fitness != decayed.best_fitness
         assert flat.best_fitness == baseline.best_fitness
         np.testing.assert_array_equal(flat.best_genes(), baseline.best_genes())
+
+    def test_engines_reject_zero_early_stopping(self):
+        with pytest.raises(ValueError, match="early_stopping"):
+            _parallel_ga(early_stopping=0)
+        with pytest.raises(ValueError, match="early_stopping"):
+            _parallel_island(early_stopping=0)
 
     @pytest.mark.parametrize("bad_rate", [-0.1, 1.5, float("nan")])
     def test_ga_rejects_invalid_mutation_rate_end(self, bad_rate):

@@ -16,6 +16,8 @@ def validate_ga_config(
     upper_bounds: Sequence[float],
     mutation_rate_end: float | None = None,
     random_immigrants: int | None = None,
+    early_stopping: int | None = None,
+    restart_on_stagnation: int | None = None,
 ) -> None:
     if population_size <= 0:
         raise ValueError("population size must be greater than zero")
@@ -29,6 +31,10 @@ def validate_ga_config(
     _validate_rate("crossover_rate", crossover_rate)
     if mutation_rate_end is not None:
         _validate_rate("mutation_rate_end", mutation_rate_end)
+    if early_stopping is not None and early_stopping <= 0:
+        raise ValueError("early_stopping must be greater than zero")
+    if restart_on_stagnation is not None and restart_on_stagnation <= 0:
+        raise ValueError("restart_on_stagnation must be greater than zero")
     if random_immigrants is not None and not 0 <= random_immigrants <= population_size:
         raise ValueError("random_immigrants must be between 0 and population size")
     if len(lower_bounds) != genome_length:

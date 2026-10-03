@@ -180,6 +180,16 @@ impl GaConfig {
         if let Some(rate) = self.mutation_rate_end {
             validation::validate_rate("mutation_rate_end", rate)?;
         }
+        if self.early_stopping == Some(0) {
+            return Err(Error::Config(
+                "early_stopping must be greater than zero".into(),
+            ));
+        }
+        if self.restart_on_stagnation == Some(0) {
+            return Err(Error::Config(
+                "restart_on_stagnation must be greater than zero".into(),
+            ));
+        }
         if self.random_immigrants.unwrap_or(0) > self.population_size {
             return Err(Error::Config(
                 "random_immigrants must not exceed population_size".into(),
