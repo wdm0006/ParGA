@@ -104,6 +104,7 @@ impl<G: Genome> MutationOperator<G> {
             Self::Real(mutation) => Self::Real(*mutation),
             Self::Binary(mutation) => Self::Binary(*mutation),
             Self::Permutation(mutation) => Self::Permutation(*mutation),
+            #[allow(clippy::used_underscore_items)]
             Self::_Phantom(_) => Self::_Phantom(std::marker::PhantomData),
         }
     }
