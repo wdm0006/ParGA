@@ -794,31 +794,39 @@ fn test_zero_restart_on_stagnation_is_rejected() {
         .restart_on_stagnation(0)
         .build()
         .unwrap();
-    let error = config.validate().unwrap_err().to_string();
+    let error = construct_and_run(config.clone());
     assert!(error.contains("restart_on_stagnation"), "got: {error}");
-    assert!(construct_and_run(config).contains("restart_on_stagnation"));
+    assert!(config
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("restart_on_stagnation"));
 }
 
 #[test]
 fn test_zero_early_stopping_is_rejected() {
     let config = patience_config_builder().early_stopping(0).build().unwrap();
-    let error = config.validate().unwrap_err().to_string();
+    let error = construct_and_run(config.clone());
     assert!(error.contains("early_stopping"), "got: {error}");
-    assert!(construct_and_run(config).contains("early_stopping"));
+    assert!(config
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("early_stopping"));
 }
 
 #[test]
 fn test_island_zero_early_stopping_is_rejected() {
     let config = island_config_builder(10).early_stopping(0).build().unwrap();
-    let error = config.validate().unwrap_err().to_string();
-    assert!(error.contains("early_stopping"), "got: {error}");
-    match IslandModel::<RealGenome, _>::new(config, Sphere) {
+    match IslandModel::<RealGenome, _>::new(config.clone(), Sphere) {
         Err(error) => assert!(error.to_string().contains("early_stopping")),
         Ok(mut model) => panic!(
             "zero patience was accepted; run evolved {} of 10 generations",
             model.run().generations
         ),
     }
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("early_stopping"), "got: {error}");
 }
 
 #[test]
