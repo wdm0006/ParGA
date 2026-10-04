@@ -85,7 +85,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
-        run: pip install maturin pytest numpy cloudpickle
+        run: pip install maturin pytest numpy cloudpickle matplotlib
 
       - name: Build wheel
         run: maturin build --release
@@ -95,7 +95,7 @@ jobs:
         shell: bash
 
       - name: Run Python tests
-        run: pytest python/tests/test_parga.py -v
+        run: pytest python/tests/test_parga.py python/tests/test_viz.py -v
 
   python-free-threaded:
     name: Python Free-Threaded Tests (3.13t)
