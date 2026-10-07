@@ -215,6 +215,24 @@ ga = GA(
 result = ga.run()
 ```
 
+### Progress, checkpoints and custom stops
+
+Pass `callback(generation, best_fitness, best_genes)` to `GA` to observe a run.
+It is called once after each evolved generation (counting from 1) on every
+strategy; return `True` to stop early. Exceptions raised by the callback
+propagate out of `run()`.
+
+```python
+def on_generation(generation, best_fitness, best_genes):
+    print(f"gen {generation}: {best_fitness:.4f}")
+    return best_fitness > -1e-6   # stop once good enough
+
+result = GA(fitness, genome_length=10, bounds=(-5, 5), callback=on_generation).run()
+```
+
+On island strategies the callback fires after that generation's migration and
+receives the global best.
+
 ### GAResult
 
 ```python

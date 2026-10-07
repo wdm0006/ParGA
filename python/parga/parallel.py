@@ -314,13 +314,21 @@ class ParallelGA:
             individual = np.clip(individual, self.lower_bounds, self.upper_bounds)
         return individual
 
-    def run(self) -> ParallelGAResult:
+    def run(
+        self,
+        callback: Callable[[int, float, np.ndarray], bool | None] | None = None,
+    ) -> ParallelGAResult:
         """Run the genetic algorithm with parallel fitness evaluation.
 
         Honors ``early_stopping`` and ``mutation_rate_end`` with the same
         semantics as the Rust engine. The returned ``generations`` is the
         number of generations actually evolved, which is lower than the
         configured count when early stopping fires.
+
+        Args:
+            callback: Optional ``callback(generation, best_fitness,
+                best_genes)`` invoked after each evolved generation (counting
+                from 1). Returning a truthy value stops the run.
 
         Returns:
             ParallelGAResult with the best solution found.
@@ -420,6 +428,11 @@ class ParallelGA:
                     stagnation_count = 0
                 else:
                     stagnation_count += 1
+
+                if callback is not None and callback(
+                    generations_evolved, best_fitness, best_individual.copy()
+                ):
+                    break
 
                 if (
                     self.early_stopping is not None
@@ -552,12 +565,20 @@ class ParallelIslandModel:
             early_stopping=early_stopping,
         )
 
-    def run(self) -> ParallelGAResult:
+    def run(
+        self,
+        callback: Callable[[int, float, np.ndarray], bool | None] | None = None,
+    ) -> ParallelGAResult:
         """Run the island model with parallel fitness evaluation.
 
         Honors ``early_stopping`` and ``mutation_rate_end`` with the same
         semantics as the Rust engine. The returned ``generations`` is the
         number of generations actually evolved.
+
+        Args:
+            callback: Optional ``callback(generation, best_fitness,
+                best_genes)`` invoked after each evolved generation (counting
+                from 1). Returning a truthy value stops the run.
         """
         rng = np.random.default_rng(self.seed)
 
@@ -765,6 +786,11 @@ class ParallelIslandModel:
                     stagnation_count = 0
                 else:
                     stagnation_count += 1
+
+                if callback is not None and callback(
+                    generations_evolved, best_fitness, best_individual.copy()
+                ):
+                    break
 
                 if (
                     self.early_stopping is not None

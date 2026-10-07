@@ -319,6 +319,16 @@ where
 
     /// Runs the genetic algorithm for the configured number of generations.
     pub fn run(&mut self) -> GaResult<G> {
+        self.run_with_callback(|_, _| false)
+    }
+
+    /// Runs like [`run`](Self::run), invoking `callback` after each completed
+    /// generation with the 1-based generation count and the current best
+    /// individual. Returning `true` stops the run after that generation.
+    pub fn run_with_callback<C>(&mut self, mut callback: C) -> GaResult<G>
+    where
+        C: FnMut(usize, &Individual<G>) -> bool,
+    {
         // Evaluate initial population
         self.evaluate_population();
 
@@ -378,6 +388,12 @@ where
                             *last = best_fitness;
                         }
                     }
+                }
+            }
+
+            if let Some(best) = self.population.best() {
+                if callback(gen + 1, best) {
+                    break;
                 }
             }
 

@@ -20,6 +20,7 @@ use crate::operators::{
     mutation::{MutationOperator, RealMutation},
     selection::SelectionOperator,
 };
+use crate::population::Individual;
 use crate::{GaConfig, GaResult, GeneticAlgorithm};
 
 /// Configure the rayon global thread pool size.
@@ -493,6 +494,38 @@ impl PyIslandResult {
     }
 }
 
+/// Invokes a Python per-generation callback from inside a GIL-released run.
+///
+/// Returns `true` (stop) when the callback returns a truthy value or raises;
+/// a raised exception is parked in `error` and re-raised after the run.
+fn call_generation_callback(
+    callback: &PyObject,
+    error: &Mutex<Option<PyErr>>,
+    generation: usize,
+    best: &Individual<RealGenome>,
+) -> bool {
+    Python::with_gil(|py| {
+        let genes = best.genome.genes().to_vec().into_pyarray(py);
+        let fitness = best.fitness.unwrap_or(f64::NEG_INFINITY);
+        let outcome = callback
+            .call1(py, (generation, fitness, genes))
+            .and_then(|value| {
+                if value.is_none(py) {
+                    Ok(false)
+                } else {
+                    value.is_truthy(py)
+                }
+            });
+        match outcome {
+            Ok(stop) => stop,
+            Err(err) => {
+                *error.lock().unwrap() = Some(err);
+                true
+            }
+        }
+    })
+}
+
 /// Standard genetic algorithm.
 #[pyclass(name = "GeneticAlgorithm")]
 pub struct PyGeneticAlgorithm {
@@ -623,7 +656,14 @@ impl PyGeneticAlgorithm {
     }
 
     /// Runs the genetic algorithm.
-    fn run(&self, py: Python<'_>) -> PyResult<PyGaResult> {
+    ///
+    /// Args:
+    ///     callback: Optional ``callback(generation, best_fitness,
+    ///         best_genes)`` called after each generation (counting from 1).
+    ///         A truthy return value stops the run; exceptions propagate.
+    #[pyo3(signature = (callback = None))]
+    fn run(&self, py: Python<'_>, callback: Option<PyObject>) -> PyResult<PyGaResult> {
+        let callback_error: Mutex<Option<PyErr>> = Mutex::new(None);
         let fitness = PyFitness::new(self.fitness_fn.clone_ref(py));
         let error_slot = Arc::clone(&fitness.error);
 
@@ -644,8 +684,17 @@ impl PyGeneticAlgorithm {
                 ga = ga.with_mutation(MutationOperator::Real(mutation));
             }
 
-            ga.run()
+            match &callback {
+                Some(cb) => ga.run_with_callback(|generation, best| {
+                    call_generation_callback(cb, &callback_error, generation, best)
+                }),
+                None => ga.run(),
+            }
         });
+
+        if let Some(err) = callback_error.lock().unwrap().take() {
+            return Err(err);
+        }
 
         if let Some(message) = error_slot.lock().unwrap().take() {
             return Err(PyRuntimeError::new_err(format!(
@@ -793,7 +842,15 @@ impl PyIslandModel {
     }
 
     /// Runs the island model.
-    fn run(&self, py: Python<'_>) -> PyResult<PyIslandResult> {
+    ///
+    /// Args:
+    ///     callback: Optional ``callback(generation, best_fitness,
+    ///         best_genes)`` called after each generation (counting from 1),
+    ///         once migration for that generation has run. A truthy return
+    ///         value stops the run; exceptions propagate.
+    #[pyo3(signature = (callback = None))]
+    fn run(&self, py: Python<'_>, callback: Option<PyObject>) -> PyResult<PyIslandResult> {
+        let callback_error: Mutex<Option<PyErr>> = Mutex::new(None);
         let fitness = PyFitness::new(self.fitness_fn.clone_ref(py));
         let error_slot = Arc::clone(&fitness.error);
 
@@ -813,8 +870,17 @@ impl PyIslandModel {
                 model = model.with_mutation(MutationOperator::Real(mutation));
             }
 
-            model.run()
+            match &callback {
+                Some(cb) => model.run_with_callback(|generation, best| {
+                    call_generation_callback(cb, &callback_error, generation, best)
+                }),
+                None => model.run(),
+            }
         });
+
+        if let Some(err) = callback_error.lock().unwrap().take() {
+            return Err(err);
+        }
 
         if let Some(message) = error_slot.lock().unwrap().take() {
             return Err(PyRuntimeError::new_err(format!(
