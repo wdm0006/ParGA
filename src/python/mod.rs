@@ -150,7 +150,7 @@ impl FitnessFunction<RealGenome> for PyFitness {
         {
             genomes
                 .par_iter()
-                .map(|genome| self.evaluate(genome))
+                .map(|genome| FitnessFunction::<RealGenome>::evaluate(self, genome))
                 .collect()
         }
 
