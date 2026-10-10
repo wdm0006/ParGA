@@ -141,6 +141,20 @@ class GA:
         crossover_rate: Probability of crossover (default: 0.8).
         seed: Random seed for reproducibility.
         verbose: Print strategy selection info (default: False).
+        callback: Optional ``callback(generation, best_fitness, best_genes)``
+                invoked once after each evolved generation on every strategy,
+                with ``generation`` counting from 1, the best fitness so far
+                and a copy of the best genes. Return ``True`` to stop the
+                run; ``GAResult.generations`` is then the generation at which
+                it stopped and ``len(fitness_history) == generations + 1``.
+                Any other return value (including ``None``) continues.
+                Exceptions raised by the callback propagate to the caller of
+                ``run()``. On ``rust_island`` and ``parallel_island`` it fires
+                after that generation's migration, and ``best_fitness`` is the
+                global best across islands. It is not invoked for the initial
+                population (generation 0). Process-pool strategies call it in
+                the parent process, so it may touch parent state; the fitness
+                function still runs in workers.
 
     Note:
         Not every option reaches every strategy, so `run()` emits a
@@ -204,6 +218,7 @@ class GA:
         local_search_iters: int | None = None,
         mutation_rate_end: float | None = None,
         random_immigrants: int | None = None,
+        callback: Callable[[int, float, np.ndarray], bool | None] | None = None,
     ):
         self.fitness_fn = fitness_fn
         self.genome_length = genome_length
@@ -221,6 +236,9 @@ class GA:
         self.migration_count = migration_count
         self.seed = seed
         self.verbose = verbose
+        if callback is not None and not callable(callback):
+            raise ValueError("callback must be callable")
+        self.callback = callback
 
         # Parse bounds
         if bounds is None:
@@ -423,7 +441,7 @@ class GA:
             ga.set_mutation(self.mutation_method)
         if self.selection_method is not None:
             ga.set_selection(self.selection_method)
-        result = ga.run()
+        result = ga.run(self.callback)
         return GAResult(
             best_genes=np.array(result.best_genes()),
             best_fitness=result.best_fitness,
@@ -450,7 +468,7 @@ class GA:
             early_stopping=self.early_stopping,
             mutation_rate_end=self.mutation_rate_end,
         )
-        result = ga.run()
+        result = ga.run(self.callback)
         return GAResult(
             best_genes=result.best_genes(),
             best_fitness=result.best_fitness,
@@ -487,7 +505,7 @@ class GA:
             ga.set_mutation(self.mutation_method)
         if self.selection_method is not None:
             ga.set_selection(self.selection_method)
-        result = ga.run()
+        result = ga.run(self.callback)
         return GAResult(
             best_genes=np.array(result.best_genes()),
             best_fitness=result.best_fitness,
@@ -518,7 +536,7 @@ class GA:
             early_stopping=self.early_stopping,
             mutation_rate_end=self.mutation_rate_end,
         )
-        result = ga.run()
+        result = ga.run(self.callback)
         return GAResult(
             best_genes=result.best_genes(),
             best_fitness=result.best_fitness,

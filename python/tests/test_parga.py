@@ -1406,3 +1406,114 @@ class TestRustIslandEngineOptions:
         """mutation_rate_end is validated like every other rate."""
         with pytest.raises(ValueError, match="mutation_rate_end"):
             self._island_ga(mutation_rate_end=bad_rate)
+
+
+def _facade_callback_ga(strategy, callback=None, **overrides):
+    """Build a seeded GA forced onto one of the four strategies."""
+    kwargs = {
+        "fitness_fn": neg_sphere_objective,
+        "genome_length": 3,
+        "population_size": 8,
+        "generations": 6,
+        "bounds": (-5.0, 5.0),
+        "elitism": 2,
+        "seed": 3,
+        "parallel": strategy.startswith("parallel"),
+        "n_workers": 1,
+        "callback": callback,
+    }
+    if strategy.endswith("island"):
+        kwargs.update(islands=2, migration_interval=1, migration_count=1)
+    kwargs.update(overrides)
+    return GA(**kwargs)
+
+
+CALLBACK_STRATEGIES = [
+    "rust",
+    "rust_island",
+    pytest.param(
+        "parallel",
+        marks=pytest.mark.skipif(is_free_threaded(), reason="forces Rust"),
+    ),
+    pytest.param(
+        "parallel_island",
+        marks=pytest.mark.skipif(is_free_threaded(), reason="forces Rust"),
+    ),
+]
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.parametrize("strategy", CALLBACK_STRATEGIES)
+class TestFacadeCallback:
+    """The per-generation callback behaves identically on every strategy."""
+
+    def test_called_once_per_generation_with_monotone_best(self, strategy):
+        calls = []
+
+        def callback(generation, best_fitness, best_genes):
+            calls.append((generation, best_fitness, np.array(best_genes)))
+
+        result = _facade_callback_ga(strategy, callback).run()
+
+        assert result.strategy == strategy
+        assert [c[0] for c in calls] == list(range(1, result.generations + 1))
+        fitnesses = [c[1] for c in calls]
+        assert fitnesses == sorted(fitnesses)
+        assert fitnesses[-1] == result.best_fitness
+        for _, fitness, genes in calls:
+            assert genes.shape == (3,)
+            assert neg_sphere_objective(genes) == pytest.approx(fitness)
+
+    @pytest.mark.parametrize("stop_at", [1, 3])
+    def test_true_stops_at_that_generation(self, strategy, stop_at):
+        result = _facade_callback_ga(
+            strategy, lambda generation, *_: generation == stop_at
+        ).run()
+
+        assert result.generations == stop_at
+        assert len(result.fitness_history) == stop_at + 1
+
+    def test_falsy_returns_do_not_stop_or_change_result(self, strategy):
+        baseline = _facade_callback_ga(strategy).run()
+        for value in (None, False, 0):
+            result = _facade_callback_ga(strategy, lambda *_, v=value: v).run()
+            assert result.generations == baseline.generations == 6
+            assert result.fitness_history == baseline.fitness_history
+            assert result.best_fitness == baseline.best_fitness
+            np.testing.assert_array_equal(result.best_genes(), baseline.best_genes())
+
+    def test_exception_propagates_unchanged(self, strategy):
+        class Boom(Exception):
+            pass
+
+        def callback(generation, *_):
+            if generation == 2:
+                raise Boom("stop here")
+
+        with pytest.raises(Boom, match="stop here"):
+            _facade_callback_ga(strategy, callback).run()
+
+    def test_callback_runs_before_early_stopping_check(self, strategy):
+        seen = []
+        result = _facade_callback_ga(
+            strategy,
+            lambda generation, *_: seen.append(generation),
+            fitness_fn=plateau_fitness,
+            early_stopping=1,
+        ).run()
+
+        assert seen == list(range(1, result.generations + 1))
+        assert result.generations < 6
+
+
+def test_callback_must_be_callable():
+    with pytest.raises(ValueError, match="callback"):
+        GA(neg_sphere_objective, genome_length=2, callback=42)
+
+
+def test_rust_callback_none_matches_unset_engine_run():
+    """Low-level engines: run() and run(callback=None) are the same run."""
+    kwargs = {"genome_length": 3, "population_size": 8, "generations": 5, "seed": 1}
+    first = GeneticAlgorithm(neg_sphere_objective, **kwargs).run()
+    second = GeneticAlgorithm(neg_sphere_objective, **kwargs).run(None)
+    assert list(first.fitness_history()) == list(second.fitness_history())

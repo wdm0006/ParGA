@@ -311,6 +311,17 @@ where
 
     /// Runs the island model evolution.
     pub fn run(&mut self) -> IslandResult<G> {
+        self.run_with_callback(|_, _| false)
+    }
+
+    /// Runs like [`run`](Self::run), invoking `callback` after each completed
+    /// generation (migration included) with the 1-based generation count and
+    /// the global best individual. Returning `true` stops the run after that
+    /// generation.
+    pub fn run_with_callback<C>(&mut self, mut callback: C) -> IslandResult<G>
+    where
+        C: FnMut(usize, &Individual<G>) -> bool,
+    {
         // Initial evaluation
         self.evaluate_all_islands();
         self.record_best_fitness();
@@ -362,6 +373,12 @@ where
                 stagnation_count = 0;
             } else {
                 stagnation_count += 1;
+            }
+
+            if let Some(best) = self.best() {
+                if callback(gen + 1, best) {
+                    break;
+                }
             }
 
             if let Some(patience) = early_stopping {
