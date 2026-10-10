@@ -141,6 +141,29 @@ result = island_ga.run()
 - **Fully Connected**: All islands can exchange with all others
 - **Random**: Random destination selection
 
+## Permutation Problems (TSP, scheduling)
+
+`PermutationGA` evolves orderings of `0..genome_length`. The fitness function receives an `int64` NumPy array and returns a finite float to maximize. It is a native-only class: the `GA` facade does not wrap it.
+
+```python
+from parga import PermutationCrossover, PermutationGA, PermutationMutation
+
+result = PermutationGA(
+    lambda order: -tour_length(order),   # maximize the negated tour length
+    genome_length=10,
+    population_size=100,
+    generations=100,
+    seed=42,
+    crossover_method=PermutationCrossover.order(),   # or partially_mapped(), cycle(), edge_recombination()
+    mutation_method=PermutationMutation.inversion(), # or swap(), insert(), scramble()
+).run()
+
+result.best_order()     # np.ndarray[int64]: best permutation
+result.best_fitness     # float
+```
+
+Defaults are order crossover and swap mutation. See [`examples/tsp_permutation.py`](examples/tsp_permutation.py).
+
 ## Operators
 
 ### Selection Methods

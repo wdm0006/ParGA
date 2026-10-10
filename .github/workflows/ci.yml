@@ -95,7 +95,7 @@ jobs:
         shell: bash
 
       - name: Run Python tests
-        run: pytest python/tests/test_parga.py python/tests/test_viz.py -v
+        run: pytest python/tests/test_parga.py python/tests/test_viz.py python/tests/test_permutation.py -v
 
   python-free-threaded:
     name: Python Free-Threaded Tests (3.13t)

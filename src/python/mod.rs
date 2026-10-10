@@ -13,11 +13,11 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::fitness::FitnessFunction;
-use crate::genome::RealGenome;
+use crate::genome::{PermutationGenome, RealGenome};
 use crate::island::{IslandConfig, IslandModel, MigrationTopology};
 use crate::operators::{
-    crossover::{CrossoverOperator, RealCrossover},
-    mutation::{MutationOperator, RealMutation},
+    crossover::{CrossoverOperator, PermutationCrossover, RealCrossover},
+    mutation::{MutationOperator, PermutationMutation, RealMutation},
     selection::SelectionOperator,
 };
 use crate::population::Individual;
@@ -55,6 +55,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCrossoverMethod>()?;
     m.add_class::<PyMutationMethod>()?;
     m.add_class::<PyMigrationTopology>()?;
+    m.add_class::<PyPermutationGA>()?;
+    m.add_class::<PyPermutationResult>()?;
+    m.add_class::<PyPermutationCrossover>()?;
+    m.add_class::<PyPermutationMutation>()?;
 
     // Add utility functions
     m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
@@ -97,7 +101,7 @@ impl PyFitness {
     }
 
     /// Evaluate the callback for a single genome, recording any failure.
-    fn call(&self, py: Python<'_>, array: Bound<'_, PyArray1<f64>>) -> f64 {
+    fn call(&self, py: Python<'_>, array: Bound<'_, PyAny>) -> f64 {
         let result = match self.callback.call1(py, (array,)) {
             Ok(result) => result,
             Err(err) => {
@@ -136,7 +140,7 @@ impl FitnessFunction<RealGenome> for PyFitness {
         Python::with_gil(|py| {
             let genes = genome.genes();
             let array = genes.to_vec().into_pyarray(py);
-            self.call(py, array)
+            self.call(py, array.into_any())
         })
     }
 
@@ -147,7 +151,7 @@ impl FitnessFunction<RealGenome> for PyFitness {
         {
             genomes
                 .par_iter()
-                .map(|genome| self.evaluate(genome))
+                .map(|genome| FitnessFunction::<RealGenome>::evaluate(self, genome))
                 .collect()
         }
 
@@ -161,7 +165,7 @@ impl FitnessFunction<RealGenome> for PyFitness {
                     .map(|genome| {
                         let genes = genome.genes();
                         let array = PyArray1::from_slice(py, genes);
-                        self.call(py, array)
+                        self.call(py, array.into_any())
                     })
                     .collect()
             })
@@ -972,4 +976,259 @@ fn schwefel(x: PyReadonlyArray1<'_, f64>) -> f64 {
     let n = genes.len() as f64;
     let sum: f64 = genes.iter().map(|&v| v * v.abs().sqrt().sin()).sum();
     -(418.9829 * n - sum)
+}
+
+/// Convert a permutation to the `int64` indices handed to Python.
+#[allow(clippy::cast_possible_wrap)]
+fn order_to_i64(order: &[usize]) -> Vec<i64> {
+    order.iter().map(|&i| i as i64).collect()
+}
+
+impl FitnessFunction<PermutationGenome> for PyFitness {
+    fn evaluate(&self, genome: &PermutationGenome) -> f64 {
+        Python::with_gil(|py| {
+            let order = order_to_i64(genome.order());
+            self.call(py, order.into_pyarray(py).into_any())
+        })
+    }
+}
+
+/// Crossover method for permutation genomes.
+#[pyclass(name = "PermutationCrossover")]
+#[derive(Clone)]
+pub struct PyPermutationCrossover {
+    inner: PermutationCrossover,
+}
+
+#[pymethods]
+impl PyPermutationCrossover {
+    /// Order crossover (OX1).
+    #[staticmethod]
+    fn order() -> Self {
+        Self {
+            inner: PermutationCrossover::Order,
+        }
+    }
+
+    /// Partially-mapped crossover (PMX).
+    #[staticmethod]
+    fn partially_mapped() -> Self {
+        Self {
+            inner: PermutationCrossover::PartiallyMapped,
+        }
+    }
+
+    /// Cycle crossover (CX).
+    #[staticmethod]
+    fn cycle() -> Self {
+        Self {
+            inner: PermutationCrossover::Cycle,
+        }
+    }
+
+    /// Edge recombination crossover.
+    #[staticmethod]
+    fn edge_recombination() -> Self {
+        Self {
+            inner: PermutationCrossover::EdgeRecombination,
+        }
+    }
+}
+
+/// Mutation method for permutation genomes.
+#[pyclass(name = "PermutationMutation")]
+#[derive(Clone)]
+pub struct PyPermutationMutation {
+    inner: PermutationMutation,
+}
+
+#[pymethods]
+impl PyPermutationMutation {
+    /// Swap two random positions.
+    #[staticmethod]
+    fn swap() -> Self {
+        Self {
+            inner: PermutationMutation::Swap,
+        }
+    }
+
+    /// Move an element to a random position.
+    #[staticmethod]
+    fn insert() -> Self {
+        Self {
+            inner: PermutationMutation::Insert,
+        }
+    }
+
+    /// Reverse a random segment.
+    #[staticmethod]
+    fn inversion() -> Self {
+        Self {
+            inner: PermutationMutation::Inversion,
+        }
+    }
+
+    /// Shuffle a random segment.
+    #[staticmethod]
+    fn scramble() -> Self {
+        Self {
+            inner: PermutationMutation::Scramble,
+        }
+    }
+}
+
+/// Result of a permutation genetic algorithm run.
+#[pyclass(name = "PermutationResult")]
+pub struct PyPermutationResult {
+    #[pyo3(get)]
+    best_fitness: f64,
+    #[pyo3(get)]
+    generations: usize,
+    #[pyo3(get)]
+    converged: bool,
+    best_order: Vec<i64>,
+    fitness_history: Vec<f64>,
+}
+
+#[pymethods]
+impl PyPermutationResult {
+    /// Returns the best ordering as an int64 numpy array.
+    fn best_order<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i64>> {
+        self.best_order.clone().into_pyarray(py)
+    }
+
+    /// Returns the fitness history as a numpy array.
+    fn fitness_history<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.fitness_history.clone().into_pyarray(py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PermutationResult(best_fitness={:.6}, generations={}, converged={})",
+            self.best_fitness, self.generations, self.converged
+        )
+    }
+}
+
+/// Genetic algorithm over permutations of `0..genome_length`.
+#[pyclass(name = "PermutationGA")]
+pub struct PyPermutationGA {
+    config: GaConfig,
+    fitness_fn: PyObject,
+    selection: Option<SelectionOperator>,
+    crossover: PermutationCrossover,
+    mutation: PermutationMutation,
+}
+
+#[pymethods]
+impl PyPermutationGA {
+    /// Creates a new permutation genetic algorithm.
+    ///
+    /// Args:
+    ///     fitness_fn: A callable that takes an int64 numpy array (a permutation
+    ///         of `0..genome_length`) and returns a finite float to maximize.
+    ///         NaN and +/-inf results are rejected with a RuntimeError.
+    ///     genome_length: Number of items being ordered.
+    ///     population_size: Number of individuals in the population.
+    ///     generations: Number of generations to evolve.
+    ///     mutation_rate: Probability of mutating an offspring.
+    ///     crossover_rate: Probability of crossover.
+    ///     elitism: Number of elite individuals to preserve.
+    ///     tournament_size: Tournament size for the default selection.
+    ///     seed: Random seed for reproducibility (optional).
+    ///     crossover_method: A `PermutationCrossover` (default: order).
+    ///     mutation_method: A `PermutationMutation` (default: swap).
+    #[new]
+    #[pyo3(signature = (
+        fitness_fn,
+        genome_length,
+        population_size = 100,
+        generations = 100,
+        mutation_rate = 0.1,
+        crossover_rate = 0.8,
+        elitism = 2,
+        tournament_size = 3,
+        seed = None,
+        crossover_method = None,
+        mutation_method = None
+    ))]
+    fn new(
+        fitness_fn: PyObject,
+        genome_length: usize,
+        population_size: usize,
+        generations: usize,
+        mutation_rate: f64,
+        crossover_rate: f64,
+        elitism: usize,
+        tournament_size: usize,
+        seed: Option<u64>,
+        crossover_method: Option<PyPermutationCrossover>,
+        mutation_method: Option<PyPermutationMutation>,
+    ) -> PyResult<Self> {
+        let mut builder = GaConfig::builder();
+        builder
+            .population_size(population_size)
+            .genome_length(genome_length)
+            .generations(generations)
+            .mutation_rate(mutation_rate)
+            .crossover_rate(crossover_rate)
+            .elitism(elitism)
+            .tournament_size(tournament_size);
+        if let Some(s) = seed {
+            builder.seed(s);
+        }
+
+        let config = builder
+            .build()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        config
+            .validate()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        Ok(Self {
+            config,
+            fitness_fn,
+            selection: None,
+            crossover: crossover_method.map_or(PermutationCrossover::Order, |m| m.inner),
+            mutation: mutation_method.map_or(PermutationMutation::Swap, |m| m.inner),
+        })
+    }
+
+    /// Sets the selection method.
+    fn set_selection(&mut self, method: &PySelectionMethod) {
+        self.selection = Some(method.inner);
+    }
+
+    /// Runs the genetic algorithm.
+    fn run(&self, py: Python<'_>) -> PyResult<PyPermutationResult> {
+        let fitness = PyFitness::new(self.fitness_fn.clone_ref(py));
+        let error_slot = Arc::clone(&fitness.error);
+
+        let result = py.allow_threads(|| {
+            let mut ga: GeneticAlgorithm<PermutationGenome, PyFitness> =
+                GeneticAlgorithm::new(self.config.clone(), fitness).unwrap();
+
+            if let Some(selection) = self.selection {
+                ga = ga.with_selection(selection);
+            }
+
+            ga.with_crossover(CrossoverOperator::Permutation(self.crossover))
+                .with_mutation(MutationOperator::Permutation(self.mutation))
+                .run()
+        });
+
+        if let Some(message) = error_slot.lock().unwrap().take() {
+            return Err(PyRuntimeError::new_err(format!(
+                "fitness function failed: {message}"
+            )));
+        }
+
+        Ok(PyPermutationResult {
+            best_fitness: result.best_fitness,
+            generations: result.generations,
+            converged: result.converged,
+            best_order: order_to_i64(result.best_individual.genome.order()),
+            fitness_history: result.fitness_history,
+        })
+    }
 }
