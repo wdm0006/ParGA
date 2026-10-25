@@ -55,6 +55,7 @@ from parga._parga import (
     # Benchmark functions
     sphere,
 )
+from parga.constraints import penalized
 from parga.ga import GA, GAResult, maximize, minimize
 from parga.parallel import ParallelGA, ParallelGAResult, ParallelIslandModel
 
@@ -79,6 +80,7 @@ __all__ = [
     "PermutationGA",
     "PermutationMutation",
     "PermutationResult",
+    "penalized",
     "SelectionMethod",
     "ackley",
     "griewank",

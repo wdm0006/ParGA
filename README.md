@@ -256,6 +256,30 @@ result = GA(fitness, genome_length=10, bounds=(-5, 5), callback=on_generation).r
 On island strategies the callback fires after that generation's migration and
 receives the global best.
 
+### Constraints
+
+`parga.penalized(fitness_fn, *, ineq=(), eq=(), penalty=1e6, eq_tol=1e-6, mode="maximize")`
+wraps a fitness function with a finite linear penalty. Each `ineq` callable
+`g(x)` must satisfy `g(x) <= 0`; each `eq` callable `h(x)` must satisfy
+`abs(h(x)) <= eq_tol`. Feasible points return `fitness_fn(x)` unchanged;
+otherwise `penalty * total_violation` is subtracted (`mode="maximize"`) or
+added (`mode="minimize"`). Use `mode="minimize"` with `parga.minimize`. The
+wrapper is picklable, so it works on the process-pool strategies. Prefer it
+over returning `inf`/`nan`, which the engines reject.
+
+```python
+def cost(x):
+    return float(np.sum(x**2))
+
+def at_least_two(x):          # g(x) <= 0  <=>  sum(x) >= 2
+    return 2.0 - float(np.sum(x))
+
+result = parga.minimize(
+    parga.penalized(cost, ineq=[at_least_two], mode="minimize"),
+    genome_length=2, bounds=(-5, 5),
+)
+```
+
 ### GAResult
 
 ```python
