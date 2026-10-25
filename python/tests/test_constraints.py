@@ -133,8 +133,9 @@ def test_maximize_end_to_end_feasible():
 
 
 @pytest.mark.skipif(is_free_threaded(), reason="free-threaded builds always use the Rust path")
-def test_parallel_pickles_wrapper():
-    wrapped = penalized(neg_sphere, ineq=[sum_at_least_two])
+@pytest.mark.parametrize("islands", [1, 2])
+def test_parallel_pickles_wrapper(islands):
+    wrapped = penalized(neg_sphere, ineq=[sum_at_least_two], eq=[sum_is_one])
     result = GA(
         wrapped,
         genome_length=2,
@@ -142,8 +143,11 @@ def test_parallel_pickles_wrapper():
         population_size=8,
         generations=2,
         n_workers=1,
+        islands=islands,
+        migration_interval=1,
+        migration_count=1,
         parallel=True,
         seed=1,
     ).run()
-    assert result.strategy == "parallel"
+    assert result.strategy == ("parallel" if islands == 1 else "parallel_island")
     assert math.isfinite(result.best_fitness)

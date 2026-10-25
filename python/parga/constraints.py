@@ -36,6 +36,25 @@ class Penalized:
         self.eq_tol = eq_tol
         self.sign = sign
 
+    def __getstate__(self) -> dict[str, Any]:
+        """Serialize each callback by value for spawned worker processes."""
+        from .parallel import _dumps_fitness_fn
+
+        state = self.__dict__.copy()
+        state["fitness_fn"] = _dumps_fitness_fn(self.fitness_fn)
+        state["ineq"] = tuple(_dumps_fitness_fn(g) for g in self.ineq)
+        state["eq"] = tuple(_dumps_fitness_fn(h) for h in self.eq)
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore callbacks without importing their original modules."""
+        import cloudpickle
+
+        state["fitness_fn"] = cloudpickle.loads(state["fitness_fn"])
+        state["ineq"] = tuple(cloudpickle.loads(g) for g in state["ineq"])
+        state["eq"] = tuple(cloudpickle.loads(h) for h in state["eq"])
+        self.__dict__.update(state)
+
     def violation(self, x: Any) -> float:
         """Total constraint violation at ``x`` (0.0 when feasible)."""
         total = 0.0
