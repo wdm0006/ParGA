@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 #[cfg(Py_GIL_DISABLED)]
 use rayon::prelude::*;
@@ -173,6 +174,25 @@ impl FitnessFunction<RealGenome> for PyFitness {
     }
 }
 
+fn params_dict<'py>(
+    py: Python<'py>,
+    params: Vec<(&'static str, f64)>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    for (name, value) in params {
+        dict.set_item(name, value)?;
+    }
+    Ok(dict)
+}
+
+fn format_operator(
+    class: &str,
+    (kind, params): (&'static str, Vec<(&'static str, f64)>),
+) -> String {
+    let args: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v:?}")).collect();
+    format!("{class}.{kind}({})", args.join(", "))
+}
+
 /// Selection method enumeration for Python.
 #[pyclass(name = "SelectionMethod")]
 #[derive(Clone)]
@@ -234,6 +254,35 @@ impl PySelectionMethod {
     fn stochastic_universal() -> Self {
         Self {
             inner: SelectionOperator::StochasticUniversal,
+        }
+    }
+
+    /// Operator kind: the name of the factory that built it.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        self.describe().0
+    }
+
+    /// Operator parameters as a dict.
+    #[getter]
+    fn params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        params_dict(py, self.describe().1)
+    }
+
+    fn __repr__(&self) -> String {
+        format_operator("SelectionMethod", self.describe())
+    }
+}
+
+impl PySelectionMethod {
+    fn describe(&self) -> (&'static str, Vec<(&'static str, f64)>) {
+        match &self.inner {
+            SelectionOperator::Tournament(n) => ("tournament", vec![("size", *n as f64)]),
+            SelectionOperator::RouletteWheel => ("roulette", vec![]),
+            SelectionOperator::Rank => ("rank", vec![]),
+            SelectionOperator::Random => ("random", vec![]),
+            SelectionOperator::Truncation(r) => ("truncation", vec![("ratio", *r)]),
+            SelectionOperator::StochasticUniversal => ("stochastic_universal", vec![]),
         }
     }
 }
@@ -310,6 +359,35 @@ impl PyCrossoverMethod {
             inner: RealCrossover::Arithmetic,
         }
     }
+
+    /// Operator kind: the name of the factory that built it.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        self.describe().0
+    }
+
+    /// Operator parameters as a dict.
+    #[getter]
+    fn params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        params_dict(py, self.describe().1)
+    }
+
+    fn __repr__(&self) -> String {
+        format_operator("CrossoverMethod", self.describe())
+    }
+}
+
+impl PyCrossoverMethod {
+    fn describe(&self) -> (&'static str, Vec<(&'static str, f64)>) {
+        match &self.inner {
+            RealCrossover::SinglePoint => ("single_point", vec![]),
+            RealCrossover::TwoPoint => ("two_point", vec![]),
+            RealCrossover::Uniform(p) => ("uniform", vec![("probability", *p)]),
+            RealCrossover::Blend(a) => ("blend", vec![("alpha", *a)]),
+            RealCrossover::SimulatedBinary(e) => ("simulated_binary", vec![("eta", *e)]),
+            RealCrossover::Arithmetic => ("arithmetic", vec![]),
+        }
+    }
 }
 
 /// Mutation method enumeration for Python.
@@ -360,6 +438,34 @@ impl PyMutationMethod {
     fn boundary() -> Self {
         Self {
             inner: RealMutation::Boundary,
+        }
+    }
+
+    /// Operator kind: the name of the factory that built it.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        self.describe().0
+    }
+
+    /// Operator parameters as a dict.
+    #[getter]
+    fn params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        params_dict(py, self.describe().1)
+    }
+
+    fn __repr__(&self) -> String {
+        format_operator("MutationMethod", self.describe())
+    }
+}
+
+impl PyMutationMethod {
+    fn describe(&self) -> (&'static str, Vec<(&'static str, f64)>) {
+        match &self.inner {
+            RealMutation::Gaussian(s) => ("gaussian", vec![("sigma", *s)]),
+            RealMutation::Uniform => ("uniform", vec![]),
+            RealMutation::Polynomial(e) => ("polynomial", vec![("eta", *e)]),
+            RealMutation::Boundary => ("boundary", vec![]),
+            _ => ("custom", vec![]),
         }
     }
 }
