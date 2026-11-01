@@ -45,11 +45,8 @@ from parga.parallel import ParallelGA, ParallelIslandModel
 from ._validation import validate_ga_config, validate_island_config
 
 #: Constructor options that only the Rust execution paths honor, mapped to the
-#: strategies that actually apply them. The process-pool engines in
-#: ``parga.parallel`` use a fixed operator pipeline (tournament selection,
-#: blend crossover, Gaussian mutation), so no strategy-specific operator
-#: override reaches them. The operator overrides do reach both Rust paths
-#: through their ``set_*`` setters, but ``restart_on_stagnation``,
+#: strategies that actually apply them. The operator overrides reach every
+#: strategy, so they are not listed. ``restart_on_stagnation``,
 #: ``local_search_iters`` and ``random_immigrants`` are single-population
 #: ``GaConfig`` settings that the low-level ``IslandModel`` binding does not
 #: accept — only the ``rust`` strategy applies them.
@@ -57,9 +54,6 @@ from ._validation import validate_ga_config, validate_island_config
 #: ``early_stopping`` and ``mutation_rate_end`` are absent because every
 #: strategy applies them rather than dropping them.
 OPTION_SUPPORTED_STRATEGIES = {
-    "crossover_method": ("rust", "rust_island"),
-    "mutation_method": ("rust", "rust_island"),
-    "selection_method": ("rust", "rust_island"),
     "restart_on_stagnation": ("rust",),
     "local_search_iters": ("rust",),
     "random_immigrants": ("rust",),
@@ -162,8 +156,8 @@ class GA:
         ignore, together with the strategies that do apply it:
 
         - `crossover_method`, `mutation_method` and `selection_method` are
-          applied by `rust` and `rust_island`; the process-pool paths use a
-          fixed operator pipeline.
+          applied by every strategy. The process-pool paths re-implement them
+          in NumPy; `custom` mutation kinds are rejected there.
         - `restart_on_stagnation`, `local_search_iters` and
           `random_immigrants` are applied by `rust` only. They are
           single-population settings that the low-level `IslandModel`
@@ -467,6 +461,9 @@ class GA:
             seed=self.seed,
             early_stopping=self.early_stopping,
             mutation_rate_end=self.mutation_rate_end,
+            selection_method=self.selection_method,
+            crossover_method=self.crossover_method,
+            mutation_method=self.mutation_method,
         )
         result = ga.run(self.callback)
         return GAResult(
@@ -535,6 +532,9 @@ class GA:
             seed=self.seed,
             early_stopping=self.early_stopping,
             mutation_rate_end=self.mutation_rate_end,
+            selection_method=self.selection_method,
+            crossover_method=self.crossover_method,
+            mutation_method=self.mutation_method,
         )
         result = ga.run(self.callback)
         return GAResult(

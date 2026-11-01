@@ -5,6 +5,8 @@ import warnings
 import numpy as np
 import pytest
 
+from parga import parallel as parallel_module
+
 from parga import (
     GA,
     CrossoverMethod,
@@ -916,7 +918,7 @@ class TestFacade:
     )
     @pytest.mark.parametrize("islands,strategy", [(1, "parallel"), (2, "parallel_island")])
     def test_parallel_path_warns_about_ignored_options(self, islands, strategy):
-        """The process-pool paths warn, naming each Rust-only option they drop."""
+        """The process-pool paths warn, naming each option they still drop."""
         ga = GA(
             simple_fitness,
             genome_length=2,
@@ -929,6 +931,8 @@ class TestFacade:
             parallel=True,
             seed=42,
             selection_method=SelectionMethod.rank(),
+            crossover_method=CrossoverMethod.arithmetic(),
+            mutation_method=MutationMethod.uniform(),
             restart_on_stagnation=5,
             early_stopping=5,
             mutation_rate_end=0.0,
@@ -940,9 +944,11 @@ class TestFacade:
         messages = [str(w.message) for w in record if issubclass(w.category, UserWarning)]
         assert len(messages) == 1
         message = messages[0]
-        assert "selection_method" in message
         assert "restart_on_stagnation" in message
         assert strategy in message
+        # Operator overrides are applied by the process-pool engines now.
+        for name in ("selection_method", "crossover_method", "mutation_method"):
+            assert name not in message
         # Options that ARE forwarded must not be named as ignored.
         assert "mutation_rate" not in message
         assert "early_stopping" not in message
@@ -1517,3 +1523,430 @@ def test_rust_callback_none_matches_unset_engine_run():
     first = GeneticAlgorithm(neg_sphere_objective, **kwargs).run()
     second = GeneticAlgorithm(neg_sphere_objective, **kwargs).run(None)
     assert list(first.fitness_history()) == list(second.fitness_history())
+
+
+def _rank_sorted(values):
+    return np.argsort(-np.asarray(values, dtype=float), kind="stable")
+
+
+class TestParallelSelectionOperators:
+    """Value tests for the NumPy selection operators behind the process pool."""
+
+    N_DRAWS = 20000
+
+    @staticmethod
+    def _freq(kind, params, fitness, count=N_DRAWS, seed=0):
+        picks = parallel_module._select_indices(
+            kind, params, fitness, count, np.random.default_rng(seed)
+        )
+        return np.bincount(picks, minlength=len(fitness)) / count
+
+    def test_truncation_cycles_through_top_slice_best_first(self):
+        fitness = [5.0, 9.0, 1.0, 7.0]  # best-first order: 1, 3, 0, 2
+        picks = parallel_module._select_indices(
+            "truncation", {"ratio": 0.5}, fitness, 5, np.random.default_rng(0)
+        )
+        assert picks.tolist() == [1, 3, 1, 3, 1]
+
+    def test_truncation_cutoff_is_clamped(self):
+        fitness = [5.0, 9.0, 1.0, 7.0]
+        rng = np.random.default_rng(0)
+        tiny = parallel_module._select_indices("truncation", {"ratio": 1e-9}, fitness, 3, rng)
+        assert tiny.tolist() == [1, 1, 1]
+        full = parallel_module._select_indices("truncation", {"ratio": 1.0}, fitness, 4, rng)
+        assert full.tolist() == [1, 3, 0, 2]
+
+    def test_tournament_as_large_as_population_always_picks_best(self):
+        freq = self._freq("tournament", {"size": 4.0}, [0.0, 3.0, 1.0, 2.0], count=200)
+        assert freq.tolist() == [0.0, 1.0, 0.0, 0.0]
+
+    def test_tournament_size_one_is_uniform(self):
+        freq = self._freq("tournament", {"size": 1.0}, [0.0, 3.0, 1.0, 2.0])
+        np.testing.assert_allclose(freq, 0.25, atol=0.02)
+
+    def test_random_is_uniform_regardless_of_fitness(self):
+        freq = self._freq("random", {}, [100.0, 0.0, -5.0, 1.0])
+        np.testing.assert_allclose(freq, 0.25, atol=0.02)
+
+    def test_rank_weights_follow_rank_not_fitness(self):
+        # Ranks (worst=1 .. best=4) give 0.4 / 0.3 / 0.2 / 0.1 from best down.
+        fitness = [1.0, 1000.0, -3.0, 2.0]  # best-first: idx 1, 3, 0, 2
+        freq = self._freq("rank", {}, fitness)
+        np.testing.assert_allclose(freq[[1, 3, 0, 2]], [0.4, 0.3, 0.2, 0.1], atol=0.02)
+
+    def test_roulette_is_proportional_to_fitness(self):
+        freq = self._freq("roulette", {}, [1.0, 3.0])
+        np.testing.assert_allclose(freq, [0.25, 0.75], atol=0.02)
+
+    def test_roulette_shifts_negative_fitness_positive(self):
+        # offset = 3 + 1 = 4, so weights are 3 and 1.
+        freq = self._freq("roulette", {}, [-1.0, -3.0])
+        np.testing.assert_allclose(freq, [0.75, 0.25], atol=0.02)
+
+    def test_roulette_with_all_zero_fitness_falls_back_to_uniform(self):
+        freq = self._freq("roulette", {}, [0.0, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(freq, 0.25, atol=0.02)
+
+    def test_stochastic_universal_is_exactly_proportional(self):
+        # Four evenly spaced pointers over weights 3:1 hit them 3 and 1 times.
+        for seed in range(10):
+            picks = parallel_module._select_indices(
+                "stochastic_universal", {}, [3.0, 1.0], 4, np.random.default_rng(seed)
+            )
+            assert np.bincount(picks, minlength=2).tolist() == [3, 1]
+
+    def test_stochastic_universal_uniform_fitness_selects_each_once(self):
+        picks = parallel_module._select_indices(
+            "stochastic_universal", {}, [2.0] * 5, 5, np.random.default_rng(3)
+        )
+        assert sorted(picks.tolist()) == [0, 1, 2, 3, 4]
+
+
+class TestParallelCrossoverOperators:
+    """Value tests for the NumPy crossover operators behind the process pool."""
+
+    P1 = np.zeros(6)
+    P2 = np.ones(6)
+
+    def test_single_point_swaps_the_tail_at_the_drawn_point(self):
+        point = int(np.random.default_rng(4).integers(0, 7))
+        c1, c2 = parallel_module._recombine(
+            "single_point", {}, self.P1, self.P2, np.random.default_rng(4)
+        )
+        np.testing.assert_array_equal(c1, [0.0] * point + [1.0] * (6 - point))
+        np.testing.assert_array_equal(c2, [1.0] * point + [0.0] * (6 - point))
+
+    def test_two_point_swaps_the_middle_segment(self):
+        a, b = sorted(int(v) for v in np.random.default_rng(9).integers(0, 7, size=2))
+        c1, c2 = parallel_module._recombine(
+            "two_point", {}, self.P1, self.P2, np.random.default_rng(9)
+        )
+        expected = np.zeros(6)
+        expected[a:b] = 1.0
+        np.testing.assert_array_equal(c1, expected)
+        np.testing.assert_array_equal(c2, 1.0 - expected)
+
+    def test_uniform_probability_extremes(self):
+        rng = np.random.default_rng(0)
+        c1, c2 = parallel_module._recombine("uniform", {"probability": 0.0}, self.P1, self.P2, rng)
+        np.testing.assert_array_equal(c1, self.P1)
+        np.testing.assert_array_equal(c2, self.P2)
+        c1, c2 = parallel_module._recombine("uniform", {"probability": 1.0}, self.P1, self.P2, rng)
+        np.testing.assert_array_equal(c1, self.P2)
+        np.testing.assert_array_equal(c2, self.P1)
+
+    def test_uniform_swaps_genes_where_the_draw_is_below_probability(self):
+        swap = np.random.default_rng(2).random(6) < 0.5
+        c1, c2 = parallel_module._recombine(
+            "uniform", {"probability": 0.5}, self.P1, self.P2, np.random.default_rng(2)
+        )
+        np.testing.assert_array_equal(c1, swap.astype(float))
+        np.testing.assert_array_equal(c2, (~swap).astype(float))
+
+    def test_arithmetic_blends_with_one_shared_weight(self):
+        alpha = np.random.default_rng(5).random()
+        c1, c2 = parallel_module._recombine(
+            "arithmetic", {}, self.P1, self.P2, np.random.default_rng(5)
+        )
+        np.testing.assert_allclose(c1, np.full(6, 1.0 - alpha))
+        np.testing.assert_allclose(c2, np.full(6, alpha))
+
+    def test_blend_alpha_zero_stays_between_parents(self):
+        c1, c2 = parallel_module._recombine(
+            "blend", {"alpha": 0.0}, self.P1, self.P2, np.random.default_rng(1)
+        )
+        assert np.all((c1 >= 0.0) & (c1 <= 1.0))
+        assert np.all((c2 >= 0.0) & (c2 <= 1.0))
+
+    def test_blend_alpha_widens_the_sampling_interval(self):
+        rng = np.random.default_rng(1)
+        samples = np.concatenate(
+            [
+                np.concatenate(
+                    parallel_module._recombine("blend", {"alpha": 0.5}, self.P1, self.P2, rng)
+                )
+                for _ in range(200)
+            ]
+        )
+        assert samples.min() < -0.4 and samples.max() > 1.4
+        assert samples.min() >= -0.5 and samples.max() <= 1.5
+
+    def test_simulated_binary_matches_the_spread_factor_formula(self):
+        eta = 2.0
+        u = np.random.default_rng(6).random(6)
+        beta = np.where(u <= 0.5, (2 * u) ** (1 / (eta + 1)), (1 / (2 * (1 - u))) ** (1 / (eta + 1)))
+        c1, c2 = parallel_module._recombine(
+            "simulated_binary", {"eta": eta}, self.P1, self.P2, np.random.default_rng(6)
+        )
+        np.testing.assert_allclose(c1, 0.5 * (1 - beta))
+        np.testing.assert_allclose(c2, 0.5 * (1 + beta))
+        np.testing.assert_allclose(c1 + c2, self.P1 + self.P2)
+
+
+class TestParallelMutationOperators:
+    """Value tests for the NumPy mutation operators behind the process pool."""
+
+    N_GENES = 20000
+
+    @staticmethod
+    def _mutate(kind, params, genes, lower, upper, rate=1.0, seed=0):
+        genes = np.array(genes, dtype=float)
+        return parallel_module._mutate_genes(
+            kind, params, genes, rate, lower, upper, np.random.default_rng(seed)
+        )
+
+    @pytest.mark.parametrize(
+        "kind,params",
+        [("gaussian", {"sigma": 0.1}), ("uniform", {}), ("polynomial", {"eta": 20.0}), ("boundary", {})],
+    )
+    def test_rate_zero_leaves_genes_untouched(self, kind, params):
+        out = self._mutate(kind, params, [1.0, 2.0, 3.0], [-5.0] * 3, [5.0] * 3, rate=0.0)
+        np.testing.assert_array_equal(out, [1.0, 2.0, 3.0])
+
+    def test_gaussian_sigma_is_a_fraction_of_the_gene_range(self):
+        n = self.N_GENES
+        out = self._mutate("gaussian", {"sigma": 0.001}, np.zeros(n), [-1000.0] * n, [1000.0] * n)
+        assert out.std() == pytest.approx(2.0, rel=0.05)  # 0.001 * 2000
+        assert abs(out.mean()) < 0.1
+
+    def test_gaussian_clips_to_bounds(self):
+        out = self._mutate("gaussian", {"sigma": 5.0}, np.zeros(500), [-1.0] * 500, [1.0] * 500)
+        assert out.min() >= -1.0 and out.max() <= 1.0
+        assert (out == 1.0).any() and (out == -1.0).any()
+
+    def test_uniform_resamples_across_the_full_range(self):
+        n = self.N_GENES
+        out = self._mutate("uniform", {}, np.full(n, 3.0), [-2.0] * n, [6.0] * n)
+        assert out.min() >= -2.0 and out.max() <= 6.0
+        assert out.mean() == pytest.approx(2.0, abs=0.1)
+
+    def test_boundary_sets_each_gene_to_one_of_its_bounds(self):
+        n = 400
+        lower = np.linspace(-5.0, -1.0, n)
+        upper = np.linspace(1.0, 5.0, n)
+        out = self._mutate("boundary", {}, np.zeros(n), lower, upper)
+        at_lower = out == lower
+        at_upper = out == upper
+        assert np.all(at_lower | at_upper)
+        assert 0.4 < at_lower.mean() < 0.6
+
+    def test_polynomial_gene_on_lower_bound_only_moves_up(self):
+        n = self.N_GENES
+        out = self._mutate("polynomial", {"eta": 20.0}, np.full(n, -5.0), [-5.0] * n, [5.0] * n)
+        assert out.min() >= -5.0
+        # E[displacement] = range / (2 * (eta + 2)) = 10 / 44
+        assert (out - -5.0).mean() == pytest.approx(10.0 / 44.0, rel=0.1)
+
+    def test_polynomial_gene_on_upper_bound_only_moves_down(self):
+        n = self.N_GENES
+        out = self._mutate("polynomial", {"eta": 20.0}, np.full(n, 5.0), [-5.0] * n, [5.0] * n)
+        assert out.max() <= 5.0
+        assert (5.0 - out).mean() == pytest.approx(10.0 / 44.0, rel=0.1)
+
+    def test_polynomial_skips_zero_width_bounds(self):
+        out = self._mutate("polynomial", {"eta": 20.0}, [2.0, 0.0], [2.0, -1.0], [2.0, 1.0])
+        assert out[0] == 2.0
+        assert out[1] != 0.0
+
+    def test_only_masked_genes_change(self):
+        genes = np.full(2000, 1.5)
+        out = self._mutate("uniform", {}, genes, [1.0] * 2000, [2.0] * 2000, rate=0.3)
+        moved = (out != 1.5).mean()
+        assert moved == pytest.approx(0.3, abs=0.04)
+
+
+class TestResolveOperator:
+    def test_native_wrappers_resolve_to_kind_and_params(self):
+        resolve = parallel_module._resolve_operator
+        assert resolve(
+            SelectionMethod.tournament(5), "selection_method", parallel_module._SELECTION_KINDS
+        ) == ("tournament", {"size": 5.0})
+        assert resolve(
+            CrossoverMethod.blend(0.3), "crossover_method", parallel_module._CROSSOVER_KINDS
+        ) == ("blend", {"alpha": 0.3})
+        assert resolve(
+            MutationMethod.gaussian(0.2), "mutation_method", parallel_module._MUTATION_KINDS
+        ) == ("gaussian", {"sigma": 0.2})
+        assert resolve(None, "mutation_method", parallel_module._MUTATION_KINDS) is None
+
+    def test_unsupported_kind_and_foreign_objects_are_rejected(self):
+        with pytest.raises(ValueError, match="custom"):
+            parallel_module._resolve_operator(
+                ("custom", {}), "mutation_method", parallel_module._MUTATION_KINDS
+            )
+        with pytest.raises(TypeError, match="kind"):
+            parallel_module._resolve_operator(
+                object(), "mutation_method", parallel_module._MUTATION_KINDS
+            )
+
+    def test_tournament_larger_than_population_is_rejected(self):
+        with pytest.warns(DeprecationWarning), pytest.raises(ValueError, match="tournament size"):
+            ParallelGA(
+                simple_fitness,
+                genome_length=2,
+                population_size=8,
+                selection_method=SelectionMethod.tournament(9),
+            )
+
+
+OPERATOR_CASES = [
+    ("selection_method", SelectionMethod.tournament(2)),
+    ("selection_method", SelectionMethod.roulette()),
+    ("selection_method", SelectionMethod.rank()),
+    ("selection_method", SelectionMethod.random()),
+    ("selection_method", SelectionMethod.truncation(0.5)),
+    ("selection_method", SelectionMethod.stochastic_universal()),
+    ("crossover_method", CrossoverMethod.single_point()),
+    ("crossover_method", CrossoverMethod.two_point()),
+    ("crossover_method", CrossoverMethod.uniform(0.3)),
+    ("crossover_method", CrossoverMethod.blend(0.1)),
+    ("crossover_method", CrossoverMethod.simulated_binary(5.0)),
+    ("crossover_method", CrossoverMethod.arithmetic()),
+    ("mutation_method", MutationMethod.gaussian(0.3)),
+    ("mutation_method", MutationMethod.uniform()),
+    ("mutation_method", MutationMethod.polynomial(10.0)),
+    ("mutation_method", MutationMethod.boundary()),
+]
+
+
+def neg_sphere(genes: np.ndarray) -> float:
+    return -float(np.sum(genes**2))
+
+
+class TestParallelEngineOperators:
+    """Operator overrides reach the process-pool engines end to end."""
+
+    @staticmethod
+    def _ga_kwargs():
+        return {
+            "fitness_fn": neg_sphere,
+            "genome_length": 4,
+            "population_size": 20,
+            "generations": 8,
+            "n_workers": 2,
+            "mutation_rate": 0.3,
+            "seed": 5,
+            "lower_bounds": [-5.0] * 4,
+            "upper_bounds": [5.0] * 4,
+        }
+
+    def test_default_run_is_bit_identical_to_pre_override_engine(self):
+        """Values recorded from master before operator overrides existed."""
+        with pytest.warns(DeprecationWarning):
+            result = ParallelGA(**self._ga_kwargs()).run()
+        assert result.best_fitness == pytest.approx(-0.3912107980672784, rel=1e-12)
+        np.testing.assert_allclose(
+            result.best_genes(),
+            [-0.5202995163033445, -0.2828782234052866, 0.07323208405840687, 0.1873931268465184],
+            rtol=1e-12,
+        )
+
+    def test_island_default_run_is_bit_identical_to_pre_override_engine(self):
+        with pytest.warns(DeprecationWarning):
+            result = ParallelIslandModel(
+                neg_sphere,
+                4,
+                num_islands=2,
+                island_population=10,
+                generations=8,
+                migration_interval=2,
+                migration_count=1,
+                n_workers=2,
+                mutation_rate=0.3,
+                mutation_rate_end=0.05,
+                seed=5,
+                lower_bounds=[-5.0] * 4,
+                upper_bounds=[5.0] * 4,
+            ).run()
+        assert result.best_fitness == pytest.approx(-0.28062251338167354, rel=1e-12)
+
+    def test_explicit_default_operators_match_no_override(self):
+        with pytest.warns(DeprecationWarning):
+            base = ParallelGA(**self._ga_kwargs()).run()
+        with pytest.warns(DeprecationWarning):
+            explicit = ParallelGA(
+                **self._ga_kwargs(),
+                crossover_method=CrossoverMethod.blend(0.5),
+                mutation_method=MutationMethod.gaussian(0.1),
+            ).run()
+        assert explicit.best_fitness == base.best_fitness
+        np.testing.assert_array_equal(explicit.best_genes(), base.best_genes())
+
+    @pytest.mark.parametrize("option,method", OPERATOR_CASES, ids=lambda v: getattr(v, "kind", v))
+    def test_ga_runs_with_each_operator(self, option, method):
+        kwargs = self._ga_kwargs() | {"generations": 3, "n_workers": 1, option: method}
+        with pytest.warns(DeprecationWarning):
+            result = ParallelGA(**kwargs).run()
+        assert np.isfinite(result.best_fitness)
+        assert np.all(np.abs(result.best_genes()) <= 5.0)
+        assert len(result.fitness_history) == result.generations + 1
+
+    def test_overrides_change_the_search(self):
+        with pytest.warns(DeprecationWarning):
+            base = ParallelGA(**self._ga_kwargs()).run()
+        for option, method in [
+            ("selection_method", SelectionMethod.random()),
+            ("crossover_method", CrossoverMethod.uniform(0.5)),
+            ("mutation_method", MutationMethod.boundary()),
+        ]:
+            with pytest.warns(DeprecationWarning):
+                other = ParallelGA(**self._ga_kwargs(), **{option: method}).run()
+            assert other.best_fitness != base.best_fitness, option
+
+    def test_island_runs_with_overrides(self):
+        with pytest.warns(DeprecationWarning):
+            result = ParallelIslandModel(
+                neg_sphere,
+                4,
+                num_islands=2,
+                island_population=8,
+                generations=3,
+                migration_interval=1,
+                migration_count=1,
+                n_workers=1,
+                seed=5,
+                lower_bounds=[-5.0] * 4,
+                upper_bounds=[5.0] * 4,
+                selection_method=SelectionMethod.rank(),
+                crossover_method=CrossoverMethod.simulated_binary(5.0),
+                mutation_method=MutationMethod.polynomial(10.0),
+            ).run()
+        assert np.isfinite(result.best_fitness)
+        assert np.all(np.abs(result.best_genes()) <= 5.0)
+
+    @pytest.mark.skipif(
+        is_free_threaded(),
+        reason="free-threaded Python always selects a Rust path",
+    )
+    @pytest.mark.parametrize("islands,strategy", [(1, "parallel"), (2, "parallel_island")])
+    def test_facade_forwards_operators_without_warning(self, monkeypatch, islands, strategy):
+        seen = []
+        real = parallel_module._select_indices
+
+        def spy(kind, *args, **kwargs):
+            seen.append(kind)
+            return real(kind, *args, **kwargs)
+
+        monkeypatch.setattr(parallel_module, "_select_indices", spy)
+        ga = GA(
+            neg_sphere,
+            genome_length=2,
+            population_size=8,
+            generations=2,
+            islands=islands,
+            migration_interval=1,
+            migration_count=1,
+            n_workers=1,
+            parallel=True,
+            seed=42,
+            selection_method=SelectionMethod.rank(),
+            crossover_method=CrossoverMethod.arithmetic(),
+            mutation_method=MutationMethod.uniform(),
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = ga.run()
+
+        assert result.strategy == strategy
+        assert set(seen) == {"rank"}
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []

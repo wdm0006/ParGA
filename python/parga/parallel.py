@@ -54,6 +54,231 @@ def _decayed_mutation_rate(
         return start
     return start + (generation / max(1, generations)) * (end - start)
 
+_SELECTION_KINDS = (
+    "tournament",
+    "roulette",
+    "rank",
+    "random",
+    "truncation",
+    "stochastic_universal",
+)
+_CROSSOVER_KINDS = (
+    "single_point",
+    "two_point",
+    "uniform",
+    "blend",
+    "simulated_binary",
+    "arithmetic",
+)
+_MUTATION_KINDS = ("gaussian", "uniform", "polynomial", "boundary")
+
+_DEFAULT_CROSSOVER = ("blend", {"alpha": 0.5})
+_DEFAULT_MUTATION = ("gaussian", {"sigma": 0.1})
+
+
+def _resolve_operator(
+    operator: object, family: str, kinds: tuple[str, ...]
+) -> tuple[str, dict] | None:
+    """Return ``(kind, params)`` for an introspectable operator, or None.
+
+    Accepts the native ``SelectionMethod``/``CrossoverMethod``/
+    ``MutationMethod`` wrappers (via their ``kind``/``params``) or a plain
+    ``(kind, params)`` tuple.
+    """
+    if operator is None:
+        return None
+    if isinstance(operator, tuple):
+        kind, params = operator
+    else:
+        try:
+            kind, params = operator.kind, operator.params  # type: ignore[attr-defined]
+        except AttributeError as exc:
+            raise TypeError(
+                f"{family} must expose 'kind' and 'params', got {operator!r}"
+            ) from exc
+    if kind not in kinds:
+        raise ValueError(
+            f"{family} kind {kind!r} is not supported by the process-pool "
+            f"engines; supported: {', '.join(kinds)}"
+        )
+    return kind, dict(params)
+
+
+def _select_indices(
+    kind: str,
+    params: dict,
+    fitness: list[float] | np.ndarray,
+    count: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Pick ``count`` parent indices, mirroring the Rust selection operators.
+
+    Rank, truncation and stochastic-universal sampling treat the population
+    as sorted best-first, as the Rust engine does, so ordering is derived from
+    ``fitness`` here.
+    """
+    fit = np.asarray(fitness, dtype=float)
+    n = len(fit)
+    if count <= 0 or n == 0:
+        return np.empty(0, dtype=int)
+
+    order = np.argsort(-fit, kind="stable")
+    sorted_fit = fit[order]
+
+    def random_picks() -> np.ndarray:
+        return rng.integers(0, n, size=count)
+
+    if kind == "tournament":
+        size = int(params["size"])
+        picks = np.array(
+            [
+                max(rng.choice(n, size=size, replace=False), key=lambda i: sorted_fit[i])
+                for _ in range(count)
+            ],
+            dtype=int,
+        )
+    elif kind == "random":
+        picks = random_picks()
+    elif kind == "rank":
+        total_rank = n * (n + 1) // 2
+        targets = rng.integers(0, total_rank, size=count)
+        cumulative = np.cumsum(n - np.arange(n))
+        picks = np.minimum(np.searchsorted(cumulative, targets, side="right"), n - 1)
+    elif kind == "truncation":
+        cutoff = min(max(int(math.ceil(n * params["ratio"])), 1), n)
+        picks = np.arange(count) % cutoff
+    elif kind in ("roulette", "stochastic_universal"):
+        min_fitness = sorted_fit.min()
+        offset = -min_fitness + 1.0 if min_fitness < 0.0 else 0.0
+        cumulative = np.cumsum(sorted_fit + offset)
+        total = cumulative[-1]
+        if total <= 0.0:
+            picks = random_picks()
+        elif kind == "roulette":
+            targets = rng.random(count) * total
+            picks = np.minimum(np.searchsorted(cumulative, targets, side="left"), n - 1)
+        else:
+            distance = total / count
+            start = rng.random() * distance
+            picks = np.empty(count, dtype=int)
+            idx = 0
+            for i in range(count):
+                pointer = start + i * distance
+                while cumulative[idx] < pointer and idx + 1 < n:
+                    idx += 1
+                picks[i] = idx
+    else:
+        raise ValueError(f"unsupported selection kind {kind!r}")
+
+    return order[picks]
+
+
+def _recombine(
+    kind: str,
+    params: dict,
+    parent1: np.ndarray,
+    parent2: np.ndarray,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cross two parents with the given real-valued operator (unclipped)."""
+    n = len(parent1)
+    if kind == "blend":
+        alpha = params["alpha"]
+        diff = np.abs(parent1 - parent2)
+        lower = np.minimum(parent1, parent2) - alpha * diff
+        upper = np.maximum(parent1, parent2) + alpha * diff
+        return rng.uniform(lower, upper), rng.uniform(lower, upper)
+    if kind == "single_point":
+        point = int(rng.integers(0, n + 1))
+        return (
+            np.concatenate([parent1[:point], parent2[point:]]),
+            np.concatenate([parent2[:point], parent1[point:]]),
+        )
+    if kind == "two_point":
+        a, b = sorted(int(v) for v in rng.integers(0, n + 1, size=2))
+        inside = np.zeros(n, dtype=bool)
+        inside[a:b] = True
+        return np.where(inside, parent2, parent1), np.where(inside, parent1, parent2)
+    if kind == "uniform":
+        swap = rng.random(n) < params["probability"]
+        return np.where(swap, parent2, parent1), np.where(swap, parent1, parent2)
+    if kind == "simulated_binary":
+        exponent = 1.0 / (params["eta"] + 1.0)
+        u = rng.random(n)
+        beta = np.where(
+            u <= 0.5, (2.0 * u) ** exponent, (1.0 / (2.0 * (1.0 - u))) ** exponent
+        )
+        return (
+            0.5 * ((1.0 + beta) * parent1 + (1.0 - beta) * parent2),
+            0.5 * ((1.0 - beta) * parent1 + (1.0 + beta) * parent2),
+        )
+    if kind == "arithmetic":
+        alpha = rng.random()
+        return (
+            alpha * parent1 + (1.0 - alpha) * parent2,
+            (1.0 - alpha) * parent1 + alpha * parent2,
+        )
+    raise ValueError(f"unsupported crossover kind {kind!r}")
+
+
+def _mutate_genes(
+    kind: str,
+    params: dict,
+    genes: np.ndarray,
+    rate: float,
+    lower: list[float] | np.ndarray,
+    upper: list[float] | np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Mutate ``genes`` per-gene at ``rate`` and clip to bounds."""
+    mask = rng.random(len(genes)) < rate
+    if not np.any(mask):
+        return genes
+    lo = np.array(lower)
+    hi = np.array(upper)
+    if kind == "gaussian":
+        sigma = (hi - lo) * params["sigma"]
+        genes[mask] += rng.normal(0, sigma[mask])
+    elif kind == "uniform":
+        genes[mask] = rng.uniform(lo[mask], hi[mask])
+    elif kind == "boundary":
+        genes[mask] = np.where(rng.random(int(mask.sum())) < 0.5, lo[mask], hi[mask])
+    elif kind == "polynomial":
+        span = hi - lo
+        sel = np.flatnonzero(mask & (span > 0.0))
+        if sel.size:
+            x, low, width = genes[sel], lo[sel], span[sel]
+            delta = (np.clip(x, low, hi[sel]) - low) / width
+            u = rng.random(sel.size)
+            power = params["eta"] + 1.0
+            lower_q = (
+                np.maximum(2.0 * u + (1.0 - 2.0 * u) * np.maximum(1.0 - delta, 0.0) ** power, 0.0)
+                ** (1.0 / power)
+                - 1.0
+            )
+            upper_q = 1.0 - (
+                np.maximum(
+                    2.0 * (1.0 - u) + 2.0 * (u - 0.5) * np.maximum(delta, 0.0) ** power,
+                    0.0,
+                )
+                ** (1.0 / power)
+            )
+            genes[sel] = x + np.where(u < 0.5, lower_q, upper_q) * width
+    else:
+        raise ValueError(f"unsupported mutation kind {kind!r}")
+    return np.clip(genes, lo, hi)
+
+
+def _validate_selection(selection: tuple[str, dict] | None, population: int) -> None:
+    if selection is None:
+        return
+    kind, params = selection
+    if kind == "tournament" and not 1 <= int(params["size"]) <= population:
+        raise ValueError(
+            f"selection tournament size must be between 1 and the population "
+            f"size ({population})"
+        )
+
 
 def _dumps_fitness_fn(fitness_fn: Callable) -> bytes:
     """Serialize a fitness function for use in worker processes.
@@ -147,6 +372,13 @@ class ParallelGA:
         mutation_rate_end: Final mutation rate. When set, the rate is
             linearly interpolated from ``mutation_rate`` to this value over
             the configured generations. None (default) keeps the rate fixed.
+        selection_method: Optional ``SelectionMethod`` replacing tournament
+            selection. None (default) uses tournament selection of
+            ``tournament_size``.
+        crossover_method: Optional ``CrossoverMethod`` replacing BLX-alpha
+            (alpha 0.5).
+        mutation_method: Optional ``MutationMethod`` replacing Gaussian
+            mutation (sigma 0.1 of each gene's range).
     """
 
     def __init__(
@@ -166,6 +398,9 @@ class ParallelGA:
         chunk_size: int | None = None,
         early_stopping: int | None = None,
         mutation_rate_end: float | None = None,
+        selection_method: object | None = None,
+        crossover_method: object | None = None,
+        mutation_method: object | None = None,
     ):
         warnings.warn(
             "ParallelGA is deprecated. Use GA() instead — on free-threaded "
@@ -194,6 +429,17 @@ class ParallelGA:
         self.chunk_size = chunk_size or max(1, population_size // (self.n_workers * 2))
         self.early_stopping = early_stopping
         self.mutation_rate_end = mutation_rate_end
+        self._selection_op = _resolve_operator(
+            selection_method, "selection_method", _SELECTION_KINDS
+        )
+        self._crossover_op = (
+            _resolve_operator(crossover_method, "crossover_method", _CROSSOVER_KINDS)
+            or _DEFAULT_CROSSOVER
+        )
+        self._mutation_op = (
+            _resolve_operator(mutation_method, "mutation_method", _MUTATION_KINDS)
+            or _DEFAULT_MUTATION
+        )
 
         validate_ga_config(
             genome_length=genome_length,
@@ -207,6 +453,7 @@ class ParallelGA:
             mutation_rate_end=mutation_rate_end,
             early_stopping=early_stopping,
         )
+        _validate_selection(self._selection_op, population_size)
 
     def _create_random_population(self, rng: np.random.Generator) -> list[np.ndarray]:
         """Create initial random population."""
@@ -281,19 +528,12 @@ class ParallelGA:
         parent2: np.ndarray,
         rng: np.random.Generator,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Blend crossover (BLX-alpha)."""
+        """Cross two parents with the configured operator (BLX-alpha by default)."""
         if rng.random() > self.crossover_rate:
             return parent1.copy(), parent2.copy()
 
-        alpha = 0.5
-        diff = np.abs(parent1 - parent2)
-        lower = np.minimum(parent1, parent2) - alpha * diff
-        upper = np.maximum(parent1, parent2) + alpha * diff
+        child1, child2 = _recombine(*self._crossover_op, parent1, parent2, rng)
 
-        child1 = rng.uniform(lower, upper)
-        child2 = rng.uniform(lower, upper)
-
-        # Clamp to bounds
         child1 = np.clip(child1, self.lower_bounds, self.upper_bounds)
         child2 = np.clip(child2, self.lower_bounds, self.upper_bounds)
 
@@ -305,14 +545,11 @@ class ParallelGA:
         rng: np.random.Generator,
         mutation_rate: float | None = None,
     ) -> np.ndarray:
-        """Gaussian mutation at ``mutation_rate`` (defaults to the configured rate)."""
+        """Mutate at ``mutation_rate`` (defaults to the configured rate)."""
         rate = self.mutation_rate if mutation_rate is None else mutation_rate
-        mask = rng.random(len(individual)) < rate
-        if np.any(mask):
-            sigma = (np.array(self.upper_bounds) - np.array(self.lower_bounds)) * 0.1
-            individual[mask] += rng.normal(0, sigma[mask])
-            individual = np.clip(individual, self.lower_bounds, self.upper_bounds)
-        return individual
+        return _mutate_genes(
+            *self._mutation_op, individual, rate, self.lower_bounds, self.upper_bounds, rng
+        )
 
     def run(
         self,
@@ -393,9 +630,23 @@ class ParallelGA:
                     new_fitness.append(fitness[i])
 
                 # Generate offspring (fitness unknown = None)
+                needed = self.population_size - len(new_population)
+                picks = (
+                    iter(
+                        _select_indices(
+                            *self._selection_op, fitness, needed + needed % 2, rng
+                        )
+                    )
+                    if self._selection_op is not None
+                    else None
+                )
                 while len(new_population) < self.population_size:
-                    parent1 = self._tournament_select(population, fitness, rng)
-                    parent2 = self._tournament_select(population, fitness, rng)
+                    if picks is None:
+                        parent1 = self._tournament_select(population, fitness, rng)
+                        parent2 = self._tournament_select(population, fitness, rng)
+                    else:
+                        parent1 = population[next(picks)].copy()
+                        parent2 = population[next(picks)].copy()
 
                     child1, child2 = self._crossover(parent1, parent2, rng)
 
@@ -496,6 +747,11 @@ class ParallelIslandModel:
         mutation_rate_end: Final mutation rate. When set, the rate is
             linearly interpolated from ``mutation_rate`` to this value over
             the configured generations. None (default) keeps the rate fixed.
+        selection_method: Optional ``SelectionMethod`` replacing tournament
+            selection (within each island).
+        crossover_method: Optional ``CrossoverMethod`` replacing BLX-alpha.
+        mutation_method: Optional ``MutationMethod`` replacing Gaussian
+            mutation.
         **kwargs: Additional arguments passed to each island's GA.
     """
 
@@ -518,6 +774,9 @@ class ParallelIslandModel:
         seed: int | None = None,
         early_stopping: int | None = None,
         mutation_rate_end: float | None = None,
+        selection_method: object | None = None,
+        crossover_method: object | None = None,
+        mutation_method: object | None = None,
     ):
         warnings.warn(
             "ParallelIslandModel is deprecated. Use GA(islands=N) instead — "
@@ -548,6 +807,17 @@ class ParallelIslandModel:
         self.seed = seed
         self.early_stopping = early_stopping
         self.mutation_rate_end = mutation_rate_end
+        self._selection_op = _resolve_operator(
+            selection_method, "selection_method", _SELECTION_KINDS
+        )
+        self._crossover_op = (
+            _resolve_operator(crossover_method, "crossover_method", _CROSSOVER_KINDS)
+            or _DEFAULT_CROSSOVER
+        )
+        self._mutation_op = (
+            _resolve_operator(mutation_method, "mutation_method", _MUTATION_KINDS)
+            or _DEFAULT_MUTATION
+        )
 
         validate_island_config(
             genome_length=genome_length,
@@ -564,6 +834,7 @@ class ParallelIslandModel:
             mutation_rate_end=mutation_rate_end,
             early_stopping=early_stopping,
         )
+        _validate_selection(self._selection_op, island_population)
 
     def run(
         self,
@@ -673,39 +944,48 @@ class ParallelIslandModel:
                         new_island_fitness.append(fitness[i])
 
                     # Generate offspring
+                    needed = self.island_population - len(new_island)
+                    picks = (
+                        iter(
+                            _select_indices(
+                                *self._selection_op, fitness, needed + needed % 2, rng
+                            )
+                        )
+                        if self._selection_op is not None
+                        else None
+                    )
                     while len(new_island) < self.island_population:
-                        # Tournament selection
-                        indices1 = rng.choice(len(island), size=self.tournament_size, replace=False)
-                        indices2 = rng.choice(len(island), size=self.tournament_size, replace=False)
-                        p1_idx = max(indices1, key=lambda i: fitness[i])
-                        p2_idx = max(indices2, key=lambda i: fitness[i])
+                        if picks is None:
+                            # Tournament selection
+                            indices1 = rng.choice(len(island), size=self.tournament_size, replace=False)
+                            indices2 = rng.choice(len(island), size=self.tournament_size, replace=False)
+                            p1_idx = max(indices1, key=lambda i: fitness[i])
+                            p2_idx = max(indices2, key=lambda i: fitness[i])
+                        else:
+                            p1_idx = next(picks)
+                            p2_idx = next(picks)
 
                         parent1 = island[p1_idx]
                         parent2 = island[p2_idx]
 
-                        # Crossover (BLX-alpha)
                         if rng.random() < self.crossover_rate:
-                            alpha = 0.5
-                            diff = np.abs(parent1 - parent2)
-                            lo = np.minimum(parent1, parent2) - alpha * diff
-                            hi = np.maximum(parent1, parent2) + alpha * diff
-                            child1 = rng.uniform(lo, hi)
-                            child2 = rng.uniform(lo, hi)
+                            child1, child2 = _recombine(
+                                *self._crossover_op, parent1, parent2, rng
+                            )
                             child1 = np.clip(child1, self.lower_bounds, self.upper_bounds)
                             child2 = np.clip(child2, self.lower_bounds, self.upper_bounds)
                         else:
                             child1 = parent1.copy()
                             child2 = parent2.copy()
 
-                        # Mutation
-                        for child in [child1, child2]:
-                            mask = rng.random(len(child)) < mutation_rate
-                            if np.any(mask):
-                                ub = np.array(self.upper_bounds)
-                                lb = np.array(self.lower_bounds)
-                                sigma = (ub - lb) * 0.1
-                                child[mask] += rng.normal(0, sigma[mask])
-                                child[:] = np.clip(child, lb, ub)
+                        child1 = _mutate_genes(
+                            *self._mutation_op, child1, mutation_rate,
+                            self.lower_bounds, self.upper_bounds, rng,
+                        )
+                        child2 = _mutate_genes(
+                            *self._mutation_op, child2, mutation_rate,
+                            self.lower_bounds, self.upper_bounds, rng,
+                        )
 
                         new_island.append(child1)
                         new_island_fitness.append(None)
