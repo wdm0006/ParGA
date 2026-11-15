@@ -65,12 +65,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         python-version: ['3.9', '3.10', '3.11', '3.12']
         # Add standard Python 3.13 on Linux only to avoid multiplying the
         # full OS/version matrix.
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python-version: '3.13'
 
     steps:
