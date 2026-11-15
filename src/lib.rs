@@ -299,6 +299,33 @@ where
         })
     }
 
+    /// Seeds the population with known candidates (warm start).
+    ///
+    /// The supplied genomes replace the first `genomes.len()` randomly
+    /// generated individuals; the rest stay random, so seeded runs remain
+    /// reproducible. Genes are clamped to the configured bounds.
+    ///
+    /// # Errors
+    /// Returns a configuration error when more genomes than `population_size`
+    /// are supplied or a genome's length differs from `genome_length`.
+    pub fn with_initial_population(mut self, genomes: Vec<G>) -> Result<Self> {
+        if genomes.len() > self.config.population_size {
+            return Err(Error::Config(
+                "initial population must not exceed population_size".into(),
+            ));
+        }
+        for (slot, mut genome) in self.population.individuals_mut().iter_mut().zip(genomes) {
+            if genome.len() != self.config.genome_length {
+                return Err(Error::Config(
+                    "initial genome length must match genome_length".into(),
+                ));
+            }
+            genome.clamp_to_bounds(&self.cached_lower, &self.cached_upper);
+            *slot = Individual::new(genome);
+        }
+        Ok(self)
+    }
+
     /// Sets the selection operator.
     pub fn with_selection(mut self, selection: SelectionOperator) -> Self {
         self.selection = selection;

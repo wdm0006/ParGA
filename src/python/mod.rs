@@ -644,6 +644,7 @@ pub struct PyGeneticAlgorithm {
     selection: Option<SelectionOperator>,
     crossover: Option<RealCrossover>,
     mutation: Option<RealMutation>,
+    initial_population: Option<Vec<Vec<f64>>>,
 }
 
 #[pymethods]
@@ -662,6 +663,9 @@ impl PyGeneticAlgorithm {
     ///     lower_bounds: Lower bounds for each gene (optional).
     ///     upper_bounds: Upper bounds for each gene (optional).
     ///     seed: Random seed for reproducibility (optional).
+    ///     initial_population: Optional 2-D list of known candidates (at most
+    ///         ``population_size`` rows) replacing the first random
+    ///         individuals; clamped to the bounds.
     #[new]
     #[pyo3(signature = (
         fitness_fn,
@@ -679,7 +683,8 @@ impl PyGeneticAlgorithm {
         restart_on_stagnation = None,
         local_search_iters = None,
         mutation_rate_end = None,
-        random_immigrants = None
+        random_immigrants = None,
+        initial_population = None
     ))]
     fn new(
         fitness_fn: PyObject,
@@ -698,6 +703,7 @@ impl PyGeneticAlgorithm {
         local_search_iters: Option<usize>,
         mutation_rate_end: Option<f64>,
         random_immigrants: Option<usize>,
+        initial_population: Option<Vec<Vec<f64>>>,
     ) -> PyResult<Self> {
         let mut builder = GaConfig::builder();
         builder
@@ -740,6 +746,9 @@ impl PyGeneticAlgorithm {
         config
             .validate()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(rows) = &initial_population {
+            validate_initial_population(rows, config.genome_length, config.population_size)?;
+        }
 
         Ok(Self {
             config,
@@ -747,6 +756,7 @@ impl PyGeneticAlgorithm {
             selection: None,
             crossover: None,
             mutation: None,
+            initial_population,
         })
     }
 
@@ -782,6 +792,12 @@ impl PyGeneticAlgorithm {
             let mut ga: GeneticAlgorithm<RealGenome, PyFitness> =
                 GeneticAlgorithm::new(self.config.clone(), fitness).unwrap();
 
+            if let Some(rows) = &self.initial_population {
+                ga = ga
+                    .with_initial_population(rows.iter().cloned().map(RealGenome::new).collect())
+                    .unwrap();
+            }
+
             if let Some(selection) = self.selection {
                 ga = ga.with_selection(selection);
             }
@@ -816,6 +832,35 @@ impl PyGeneticAlgorithm {
     }
 }
 
+/// Validates a warm-start population from Python: finite values, rows of
+/// `genome_length`, and at most `max_rows` rows.
+fn validate_initial_population(
+    rows: &[Vec<f64>],
+    genome_length: usize,
+    max_rows: usize,
+) -> PyResult<()> {
+    if rows.len() > max_rows {
+        return Err(PyValueError::new_err(format!(
+            "initial_population has {} rows but the population size is {max_rows}",
+            rows.len()
+        )));
+    }
+    for (i, row) in rows.iter().enumerate() {
+        if row.len() != genome_length {
+            return Err(PyValueError::new_err(format!(
+                "initial_population row {i} has length {} but genome_length is {genome_length}",
+                row.len()
+            )));
+        }
+        if row.iter().any(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(format!(
+                "initial_population row {i} contains non-finite values"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Island model genetic algorithm.
 #[pyclass(name = "IslandModel")]
 pub struct PyIslandModel {
@@ -824,6 +869,7 @@ pub struct PyIslandModel {
     selection: Option<SelectionOperator>,
     crossover: Option<RealCrossover>,
     mutation: Option<RealMutation>,
+    initial_population: Option<Vec<Vec<f64>>>,
 }
 
 #[pymethods]
@@ -849,6 +895,9 @@ impl PyIslandModel {
     ///     early_stopping: Stop after this many generations without improvement
     ///         (optional).
     ///     mutation_rate_end: Final mutation rate for linear decay (optional).
+    ///     initial_population: Optional 2-D list of known candidates, at most
+    ///         ``num_islands * island_population`` rows, distributed
+    ///         round-robin across islands; remaining slots stay random.
     #[new]
     #[pyo3(signature = (
         fitness_fn,
@@ -867,7 +916,8 @@ impl PyIslandModel {
         upper_bounds = None,
         seed = None,
         early_stopping = None,
-        mutation_rate_end = None
+        mutation_rate_end = None,
+        initial_population = None
     ))]
     fn new(
         fitness_fn: PyObject,
@@ -887,6 +937,7 @@ impl PyIslandModel {
         seed: Option<u64>,
         early_stopping: Option<usize>,
         mutation_rate_end: Option<f64>,
+        initial_population: Option<Vec<Vec<f64>>>,
     ) -> PyResult<Self> {
         let topo = topology.map(|t| t.inner).unwrap_or(MigrationTopology::Ring);
 
@@ -926,6 +977,13 @@ impl PyIslandModel {
         config
             .validate()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(rows) = &initial_population {
+            validate_initial_population(
+                rows,
+                config.genome_length,
+                config.num_islands * config.island_population,
+            )?;
+        }
 
         Ok(Self {
             config,
@@ -933,6 +991,7 @@ impl PyIslandModel {
             selection: None,
             crossover: None,
             mutation: None,
+            initial_population,
         })
     }
 
@@ -967,6 +1026,12 @@ impl PyIslandModel {
         let result = py.allow_threads(|| {
             let mut model: IslandModel<RealGenome, PyFitness> =
                 IslandModel::new(self.config.clone(), fitness).unwrap();
+
+            if let Some(rows) = &self.initial_population {
+                model = model
+                    .with_initial_population(rows.iter().cloned().map(RealGenome::new).collect())
+                    .unwrap();
+            }
 
             if let Some(selection) = self.selection {
                 model = model.with_selection(selection);

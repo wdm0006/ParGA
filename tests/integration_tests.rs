@@ -893,3 +893,75 @@ fn test_island_run_after_step_does_not_rewind_the_generation_counter() {
     assert_eq!(model.generation(), steps + generations);
     assert_eq!(result.generations, steps + generations);
 }
+
+fn warm_start_ga_config() -> GaConfig {
+    GaConfig::builder()
+        .population_size(20)
+        .genome_length(3)
+        .generations(3)
+        .lower_bounds(vec![-5.0; 3])
+        .upper_bounds(vec![5.0; 3])
+        .seed(11)
+        .build()
+        .unwrap()
+}
+
+#[test]
+fn test_warm_start_serial_seeds_generation_zero_best() {
+    let mut ga = GeneticAlgorithm::new(warm_start_ga_config(), Sphere)
+        .unwrap()
+        .with_initial_population(vec![RealGenome::new(vec![0.0; 3])])
+        .unwrap();
+    let result = ga.run();
+    // Sphere's optimum is the origin, scored 0.0; random draws in [-5, 5]
+    // essentially never reach it, so this value comes from the seed.
+    assert!(result.fitness_history[0] == 0.0);
+}
+
+#[test]
+fn test_warm_start_island_seeds_generation_zero_best_and_round_robin() {
+    let mut model = IslandModel::new(island_config_builder(2).build().unwrap(), Sphere).unwrap();
+    model = model
+        .with_initial_population(vec![
+            RealGenome::new(vec![1.0; 3]),
+            RealGenome::new(vec![2.0; 3]),
+            RealGenome::new(vec![3.0; 3]),
+        ])
+        .unwrap();
+    let first =
+        |island: usize, slot: usize| model.islands()[island].individuals()[slot].genome.genes()[0];
+    // round-robin: genome i -> island i % 2, slot i / 2
+    assert_eq!(first(0, 0).to_bits(), 1.0_f64.to_bits());
+    assert_eq!(first(1, 0).to_bits(), 2.0_f64.to_bits());
+    assert_eq!(first(0, 1).to_bits(), 3.0_f64.to_bits());
+
+    let mut model = IslandModel::new(island_config_builder(2).build().unwrap(), Sphere)
+        .unwrap()
+        .with_initial_population(vec![RealGenome::new(vec![0.0; 3])])
+        .unwrap();
+    let result = model.run();
+    assert!(result.fitness_history[0] == 0.0);
+}
+
+#[test]
+fn test_warm_start_clamps_and_rejects_bad_input() {
+    // Maximizing sum |x| inside [-5, 5]: only the clamped seed reaches 15.
+    let abs_sum = fitness_fn(|g: &RealGenome| g.genes().iter().map(|x| x.abs()).sum::<f64>());
+    let mut ga = GeneticAlgorithm::new(warm_start_ga_config(), abs_sum)
+        .unwrap()
+        .with_initial_population(vec![RealGenome::new(vec![100.0, -100.0, 100.0])])
+        .unwrap();
+    let result = ga.run();
+    assert_eq!(result.fitness_history[0].to_bits(), 15.0_f64.to_bits());
+    assert_eq!(result.best_individual.genome.genes(), &[5.0, -5.0, 5.0]);
+
+    let too_many = vec![RealGenome::new(vec![0.0; 3]); 21];
+    assert!(GeneticAlgorithm::new(warm_start_ga_config(), Sphere)
+        .unwrap()
+        .with_initial_population(too_many)
+        .is_err());
+    assert!(GeneticAlgorithm::new(warm_start_ga_config(), Sphere)
+        .unwrap()
+        .with_initial_population(vec![RealGenome::new(vec![0.0; 2])])
+        .is_err());
+}
