@@ -54,9 +54,9 @@ from ._validation import validate_ga_config, validate_island_config
 #: ``early_stopping`` and ``mutation_rate_end`` are absent because every
 #: strategy applies them rather than dropping them.
 OPTION_SUPPORTED_STRATEGIES = {
-    "restart_on_stagnation": ("rust",),
+    "restart_on_stagnation": ("rust", "parallel"),
     "local_search_iters": ("rust",),
-    "random_immigrants": ("rust",),
+    "random_immigrants": ("rust", "parallel"),
     "migration_topology": ("rust_island",),
 }
 
@@ -158,11 +158,10 @@ class GA:
         - `crossover_method`, `mutation_method` and `selection_method` are
           applied by every strategy. The process-pool paths re-implement them
           in NumPy; `custom` mutation kinds are rejected there.
-        - `restart_on_stagnation`, `local_search_iters` and
-          `random_immigrants` are applied by `rust` only. They are
-          single-population settings that the low-level `IslandModel`
-          binding does not accept, so `islands > 1` drops them even with
-          `parallel=False`.
+        - `restart_on_stagnation` and `random_immigrants` are applied by
+          `rust` and `parallel`; `local_search_iters` by `rust` only. They
+          are single-population settings that neither island strategy
+          accepts, so `islands > 1` drops them.
 
         `early_stopping` and `mutation_rate_end` are applied by every
         strategy, so they are never part of that warning.
@@ -464,6 +463,8 @@ class GA:
             selection_method=self.selection_method,
             crossover_method=self.crossover_method,
             mutation_method=self.mutation_method,
+            restart_on_stagnation=self.restart_on_stagnation,
+            random_immigrants=self.random_immigrants,
         )
         result = ga.run(self.callback)
         return GAResult(
