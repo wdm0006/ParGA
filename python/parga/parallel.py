@@ -379,6 +379,11 @@ class ParallelGA:
             (alpha 0.5).
         mutation_method: Optional ``MutationMethod`` replacing Gaussian
             mutation (sigma 0.1 of each gene's range).
+        restart_on_stagnation: Re-randomize every non-elite individual each
+            time this many consecutive generations pass without improvement.
+            When set, ``early_stopping`` is ignored (as in the Rust engine).
+        random_immigrants: Replace this many of the worst individuals with
+            fresh random ones every generation. 0 is a no-op.
     """
 
     def __init__(
@@ -401,6 +406,8 @@ class ParallelGA:
         selection_method: object | None = None,
         crossover_method: object | None = None,
         mutation_method: object | None = None,
+        restart_on_stagnation: int | None = None,
+        random_immigrants: int | None = None,
     ):
         warnings.warn(
             "ParallelGA is deprecated. Use GA() instead — on free-threaded "
@@ -429,6 +436,8 @@ class ParallelGA:
         self.chunk_size = chunk_size or max(1, population_size // (self.n_workers * 2))
         self.early_stopping = early_stopping
         self.mutation_rate_end = mutation_rate_end
+        self.restart_on_stagnation = restart_on_stagnation
+        self.random_immigrants = random_immigrants
         self._selection_op = _resolve_operator(
             selection_method, "selection_method", _SELECTION_KINDS
         )
@@ -452,8 +461,30 @@ class ParallelGA:
             upper_bounds=self.upper_bounds,
             mutation_rate_end=mutation_rate_end,
             early_stopping=early_stopping,
+            restart_on_stagnation=restart_on_stagnation,
+            random_immigrants=random_immigrants,
         )
         _validate_selection(self._selection_op, population_size)
+
+    def _replace_with_random(
+        self,
+        population: list[np.ndarray],
+        fitness: list[float],
+        indices: np.ndarray,
+        executor: ProcessPoolExecutor,
+        rng: np.random.Generator,
+    ) -> tuple[list[np.ndarray], list[float]]:
+        """Replace ``indices`` with fresh random genomes and evaluate them."""
+        lower = np.array(self.lower_bounds)
+        upper = np.array(self.upper_bounds)
+        population = list(population)
+        new_fitness: list[float | None] = list(fitness)
+        for i in indices:
+            population[i] = rng.uniform(lower, upper)
+            new_fitness[i] = None
+        return population, self._evaluate_parallel(
+            population, executor, existing_fitness=new_fitness
+        )
 
     def _create_random_population(self, rng: np.random.Generator) -> list[np.ndarray]:
         """Create initial random population."""
@@ -666,12 +697,21 @@ class ParallelGA:
                     population, executor, existing_fitness=new_fitness
                 )
 
+                if self.random_immigrants:
+                    order = np.argsort(-np.array(fitness), kind="stable")
+                    population, fitness = self._replace_with_random(
+                        population,
+                        fitness,
+                        order[self.population_size - self.random_immigrants :],
+                        executor,
+                        rng,
+                    )
+
                 # Track best
                 for i, f in enumerate(fitness):
                     if f > best_fitness:
                         best_fitness = f
                         best_individual = population[i].copy()
-                fitness_history.append(best_fitness)
                 generations_evolved = gen + 1
 
                 if best_fitness > best_so_far + _STAGNATION_EPSILON:
@@ -680,13 +720,28 @@ class ParallelGA:
                 else:
                     stagnation_count += 1
 
+                patience = self.restart_on_stagnation
+                if patience is not None and stagnation_count % patience == 0 and (
+                    stagnation_count >= patience
+                ):
+                    order = np.argsort(-np.array(fitness), kind="stable")
+                    population, fitness = self._replace_with_random(
+                        population, fitness, order[self.elitism :], executor, rng
+                    )
+                    for i, f in enumerate(fitness):
+                        if f > best_fitness:
+                            best_fitness = f
+                            best_individual = population[i].copy()
+                fitness_history.append(best_fitness)
+
                 if callback is not None and callback(
                     generations_evolved, best_fitness, best_individual.copy()
                 ):
                     break
 
                 if (
-                    self.early_stopping is not None
+                    self.restart_on_stagnation is None
+                    and self.early_stopping is not None
                     and stagnation_count >= self.early_stopping
                 ):
                     break

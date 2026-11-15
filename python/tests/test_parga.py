@@ -933,7 +933,7 @@ class TestFacade:
             selection_method=SelectionMethod.rank(),
             crossover_method=CrossoverMethod.arithmetic(),
             mutation_method=MutationMethod.uniform(),
-            restart_on_stagnation=5,
+            local_search_iters=2,
             early_stopping=5,
             mutation_rate_end=0.0,
         )
@@ -944,7 +944,7 @@ class TestFacade:
         messages = [str(w.message) for w in record if issubclass(w.category, UserWarning)]
         assert len(messages) == 1
         message = messages[0]
-        assert "restart_on_stagnation" in message
+        assert "local_search_iters" in message
         assert strategy in message
         # Operator overrides are applied by the process-pool engines now.
         for name in ("selection_method", "crossover_method", "mutation_method"):
@@ -953,7 +953,8 @@ class TestFacade:
         assert "mutation_rate" not in message
         assert "early_stopping" not in message
         # Unset advanced options must not be named either.
-        assert "local_search_iters" not in message
+        assert "restart_on_stagnation" not in message
+        assert "random_immigrants" not in message
 
     @pytest.mark.skipif(
         is_free_threaded(),
@@ -1949,4 +1950,75 @@ class TestParallelEngineOperators:
 
         assert result.strategy == strategy
         assert set(seen) == {"rank"}
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+
+class TestParallelRestartAndImmigrants:
+    """restart_on_stagnation and random_immigrants on the process-pool GA."""
+
+    def test_restart_keeps_one_history_entry_per_generation(self, monkeypatch):
+        restarts = []
+        real = ParallelGA._replace_with_random
+
+        def spy(self, population, fitness, indices, executor, rng):
+            restarts.append(len(indices))
+            return real(self, population, fitness, indices, executor, rng)
+
+        monkeypatch.setattr(ParallelGA, "_replace_with_random", spy)
+        # Constant fitness: gen 0 improves, so stagnation hits 2 at gen 2 and 4.
+        result = _parallel_ga(restart_on_stagnation=2, elitism=2).run()
+        assert result.generations == 6
+        assert len(result.fitness_history) == result.generations + 1
+        assert restarts == [6, 6]
+
+    def test_restart_disables_early_stopping(self):
+        result = _parallel_ga(restart_on_stagnation=3, early_stopping=1).run()
+        assert result.generations == 6
+        assert len(result.fitness_history) == 7
+
+    def test_immigrants_replace_worst_individuals(self, monkeypatch):
+        sizes = []
+        real = ParallelGA._replace_with_random
+
+        def spy(self, population, fitness, indices, executor, rng):
+            sizes.append(len(indices))
+            kept = [f for i, f in enumerate(fitness) if i not in set(indices)]
+            assert max(fitness[i] for i in indices) <= min(kept)
+            return real(self, population, fitness, indices, executor, rng)
+
+        monkeypatch.setattr(ParallelGA, "_replace_with_random", spy)
+        result = _parallel_ga(fitness_fn=simple_fitness, random_immigrants=3).run()
+        assert sizes == [3] * 6
+        assert len(result.fitness_history) == result.generations + 1
+
+    def test_zero_immigrants_is_a_noop(self):
+        base = _parallel_ga(fitness_fn=simple_fitness).run()
+        zero = _parallel_ga(fitness_fn=simple_fitness, random_immigrants=0).run()
+        assert repr(base.best_fitness) == repr(zero.best_fitness)
+        np.testing.assert_array_equal(base.best_genes(), zero.best_genes())
+
+    def test_validation_matches_rust(self):
+        with pytest.raises(ValueError, match="restart_on_stagnation"):
+            _parallel_ga(restart_on_stagnation=0)
+        with pytest.raises(ValueError, match="random_immigrants"):
+            _parallel_ga(random_immigrants=9)
+
+    @pytest.mark.skipif(is_free_threaded(), reason="free-threaded always selects Rust")
+    def test_facade_forwards_without_warning(self):
+        ga = GA(
+            plateau_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=4,
+            n_workers=1,
+            parallel=True,
+            seed=3,
+            restart_on_stagnation=2,
+            random_immigrants=1,
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = ga.run()
+        assert result.strategy == "parallel"
+        assert len(result.fitness_history) == result.generations + 1
         assert [w for w in record if issubclass(w.category, UserWarning)] == []
