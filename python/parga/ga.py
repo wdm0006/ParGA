@@ -18,6 +18,7 @@ Example:
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing as mp
 import time
 import warnings
@@ -421,10 +422,8 @@ class GA:
 
         # On free-threaded Python, configure rayon thread pool size
         if is_free_threaded() and self._strategy in ("rust", "rust_island"):
-            try:
+            with contextlib.suppress(ValueError):  # Thread pool already initialized
                 set_num_threads(self.n_workers)
-            except ValueError:
-                pass  # Thread pool already initialized
 
         if self._strategy == "rust":
             return self._run_rust()

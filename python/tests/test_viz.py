@@ -10,14 +10,14 @@ import pytest
 
 pytest.importorskip("matplotlib")
 
-import matplotlib  # noqa: E402
+import matplotlib
 
 matplotlib.use("Agg", force=True)
 
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.figure import Figure  # noqa: E402
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
-from parga import viz  # noqa: E402
+from parga import viz
 
 HISTORY = [5.0, 3.0, 2.0, 1.5, 1.0]
 GENES = np.array([0.5, -1.0, 2.0])

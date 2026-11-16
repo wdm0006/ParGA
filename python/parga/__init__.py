@@ -28,6 +28,8 @@ Example:
     >>> result = GA(fitness, genome_length=10, islands=4).run()
 """
 
+# Visualization module (requires matplotlib)
+from parga import viz
 from parga._parga import (
     CrossoverMethod,
     # Result types
@@ -59,9 +61,6 @@ from parga.constraints import penalized
 from parga.ga import GA, GAResult, maximize, minimize
 from parga.parallel import ParallelGA, ParallelGAResult, ParallelIslandModel
 
-# Visualization module (requires matplotlib)
-from parga import viz
-
 __version__ = "0.1.0"
 __all__ = [
     "GA",
@@ -80,13 +79,13 @@ __all__ = [
     "PermutationGA",
     "PermutationMutation",
     "PermutationResult",
-    "penalized",
     "SelectionMethod",
     "ackley",
     "griewank",
     "is_free_threaded",
     "maximize",
     "minimize",
+    "penalized",
     "rastrigin",
     "rosenbrock",
     "schwefel",

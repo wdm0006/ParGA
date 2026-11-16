@@ -125,7 +125,7 @@ def main():
                     )
                     return ga.run()
 
-            t_parallel = bench("ProcessPoolExecutor", run_parallel)
+            bench("ProcessPoolExecutor", run_parallel)
 
         print()
 
