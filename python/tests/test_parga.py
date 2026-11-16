@@ -1953,6 +1953,161 @@ class TestParallelEngineOperators:
         assert [w for w in record if issubclass(w.category, UserWarning)] == []
 
 
+def abs_sum_fitness(genes: np.ndarray) -> float:
+    return float(np.sum(np.abs(genes)))
+
+
+_WARM_START_STRATEGIES = [
+    pytest.param(False, 1, "rust", id="rust"),
+    pytest.param(
+        True,
+        1,
+        "parallel",
+        id="parallel",
+        marks=pytest.mark.skipif(is_free_threaded(), reason="forces Rust"),
+    ),
+    pytest.param(False, 2, "rust_island", id="rust_island"),
+    pytest.param(
+        True,
+        2,
+        "parallel_island",
+        id="parallel_island",
+        marks=pytest.mark.skipif(is_free_threaded(), reason="forces Rust"),
+    ),
+]
+
+
+def _warm_start_ga(parallel, islands, fitness=simple_fitness, **overrides):
+    kwargs = {
+        "fitness_fn": fitness,
+        "genome_length": 3,
+        "population_size": 8,
+        "generations": 2,
+        "bounds": (-5.0, 5.0),
+        "parallel": parallel,
+        "islands": islands,
+        "n_workers": 1,
+        "seed": 3,
+    }
+    if islands > 1:
+        kwargs.update(migration_interval=1, migration_count=1)
+    kwargs.update(overrides)
+    return GA(**kwargs)
+
+
+class TestWarmStart:
+    @pytest.mark.parametrize(("parallel", "islands", "strategy"), _WARM_START_STRATEGIES)
+    def test_seeding_the_optimum_sets_generation_zero_best(
+        self, parallel, islands, strategy
+    ):
+        ga = _warm_start_ga(
+            parallel, islands, initial_population=np.zeros((1, 3))
+        )
+        result = ga.run()
+        assert result.strategy == strategy
+        # Sphere's optimum scores 0.0; random draws in [-5, 5] never hit it.
+        assert result.fitness_history[0] == 0.0
+        assert result.best_fitness == 0.0
+
+    @pytest.mark.parametrize(("parallel", "islands", "strategy"), _WARM_START_STRATEGIES)
+    def test_out_of_bounds_rows_are_clamped(self, parallel, islands, strategy):
+        ga = _warm_start_ga(
+            parallel,
+            islands,
+            fitness=abs_sum_fitness,
+            initial_population=[[100.0, -100.0, 100.0]],
+        )
+        result = ga.run()
+        assert result.strategy == strategy
+        # Only the clamped seed reaches 15; unclamped it would score 300.
+        assert result.fitness_history[0] == 15.0
+        assert result.best_fitness == 15.0
+
+    @pytest.mark.parametrize(("parallel", "islands", "strategy"), _WARM_START_STRATEGIES)
+    def test_every_seed_row_is_used(self, parallel, islands, strategy):
+        # Full-size seed: the best row must be found whichever island holds it.
+        rows = np.full((8, 3), 4.0)
+        rows[5] = 0.0
+        ga = _warm_start_ga(parallel, islands, initial_population=rows)
+        result = ga.run()
+        assert result.strategy == strategy
+        assert result.fitness_history[0] == 0.0
+
+    def test_seeded_run_is_reproducible(self):
+        seed_rows = np.array([[1.0, 2.0, 3.0]])
+        results = [
+            _warm_start_ga(False, 1, initial_population=seed_rows).run()
+            for _ in range(2)
+        ]
+        assert results[0].fitness_history == results[1].fitness_history
+        np.testing.assert_array_equal(
+            results[0].best_genes(), results[1].best_genes()
+        )
+
+    def test_none_matches_omitted(self):
+        a = _warm_start_ga(False, 1).run()
+        b = _warm_start_ga(False, 1, initial_population=None).run()
+        assert a.fitness_history == b.fitness_history
+
+    def test_facade_input_is_not_mutated(self):
+        rows = np.array([[100.0, 0.0, 0.0]])
+        _warm_start_ga(False, 1, initial_population=rows).run()
+        assert rows[0, 0] == 100.0
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            [0.0, 0.0, 0.0],
+            np.zeros((1, 2)),
+            np.zeros((1, 3, 1)),
+            [[0.0, float("nan"), 0.0]],
+            [[0.0, float("inf"), 0.0]],
+            [[0.0, float("-inf"), 0.0]],
+            np.zeros((9, 3)),
+            [["a", "b", "c"]],
+        ],
+        ids=["1d", "columns", "3d", "nan", "inf", "-inf", "too-many", "non-numeric"],
+    )
+    @pytest.mark.parametrize("islands", [1, 2])
+    def test_invalid_initial_population_raises(self, rows, islands):
+        with pytest.raises(ValueError, match="initial_population"):
+            _warm_start_ga(False, islands, initial_population=rows)
+
+    def test_island_total_excludes_remainder(self):
+        # 9 // 2 = 4 per island -> 8 usable slots, so 9 rows are rejected.
+        with pytest.raises(ValueError, match="initial_population"):
+            _warm_start_ga(
+                False, 2, population_size=9, initial_population=np.zeros((9, 3))
+            )
+        _warm_start_ga(False, 2, population_size=9, initial_population=np.zeros((8, 3)))
+
+    def test_low_level_engines_validate(self):
+        with pytest.raises(ValueError, match="initial_population"):
+            GeneticAlgorithm(
+                simple_fitness,
+                genome_length=3,
+                population_size=4,
+                initial_population=[[0.0, 0.0]],
+            )
+        with pytest.raises(ValueError, match="initial_population"):
+            GeneticAlgorithm(
+                simple_fitness,
+                genome_length=3,
+                population_size=4,
+                initial_population=[[0.0, float("nan"), 0.0]],
+            )
+        with pytest.raises(ValueError, match="initial_population"):
+            IslandModel(
+                simple_fitness,
+                genome_length=3,
+                num_islands=2,
+                island_population=4,
+                migration_interval=1,
+                migration_count=1,
+                initial_population=[[0.0] * 3] * 9,
+            )
+
+
 class TestParallelRestartAndImmigrants:
     """restart_on_stagnation and random_immigrants on the process-pool GA."""
 
