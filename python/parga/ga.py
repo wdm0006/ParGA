@@ -57,7 +57,7 @@ OPTION_SUPPORTED_STRATEGIES = {
     "restart_on_stagnation": ("rust", "parallel"),
     "local_search_iters": ("rust",),
     "random_immigrants": ("rust", "parallel"),
-    "migration_topology": ("rust_island",),
+    "migration_topology": ("rust_island", "parallel_island"),
 }
 
 #: Names of the options in :data:`OPTION_SUPPORTED_STRATEGIES`. None of them
@@ -123,8 +123,8 @@ class GA:
         islands: Number of islands for island model. If > 1, uses island
                 model with migration. Default is 1 (no islands).
         migration_topology: Which islands may send migrants to which, as a
-                :class:`MigrationTopology`. Only the ``rust_island`` strategy
-                applies it; leave it as ``None`` to take that engine's default.
+                :class:`MigrationTopology`. Both island strategies apply it;
+                leave it as ``None`` to take the default (ring).
                 The choice is not cosmetic: on the standard multimodal
                 benchmarks a fully connected topology reaches a better optimum
                 than a ring at the same budget, because a ring slows how fast a
@@ -536,6 +536,7 @@ class GA:
             selection_method=self.selection_method,
             crossover_method=self.crossover_method,
             mutation_method=self.mutation_method,
+            migration_topology=self.migration_topology,
         )
         result = ga.run(self.callback)
         return GAResult(

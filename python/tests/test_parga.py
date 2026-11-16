@@ -2022,3 +2022,107 @@ class TestParallelRestartAndImmigrants:
         assert result.strategy == "parallel"
         assert len(result.fitness_history) == result.generations + 1
         assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+
+class TestParallelIslandTopology:
+    """migration_topology on the process-pool island path."""
+
+    EXPECTED_EDGES = {
+        "ring": {(0, 1), (1, 2), (2, 3), (3, 0)},
+        "fully_connected": {(i, j) for i in range(4) for j in range(4) if i != j},
+        "star": {(0, 1), (0, 2), (0, 3), (1, 0), (2, 0), (3, 0)},
+        "ladder": {(0, 1), (1, 0), (1, 2), (2, 1), (2, 3), (3, 2)},
+    }
+
+    @pytest.mark.parametrize("kind", sorted(EXPECTED_EDGES))
+    def test_static_routing_matches_expected_edges(self, kind):
+        rng = np.random.default_rng(0)
+        edges = {
+            (src, dst)
+            for src in range(4)
+            for dst in parallel_module._migration_destinations(kind, src, 4, rng)
+        }
+        assert edges == self.EXPECTED_EDGES[kind]
+
+    def test_random_routing_never_targets_source_and_covers_others(self):
+        rng = np.random.default_rng(0)
+        seen = set()
+        for src in range(4):
+            for _ in range(200):
+                (dst,) = parallel_module._migration_destinations("random", src, 4, rng)
+                assert dst != src
+                seen.add((src, dst))
+        assert seen == self.EXPECTED_EDGES["fully_connected"]
+
+    @pytest.mark.parametrize("kind", ["ring", "fully_connected", "random", "star", "ladder"])
+    def test_native_wrapper_kind_is_resolved(self, kind):
+        topology = getattr(MigrationTopology, kind)()
+        assert topology.kind == kind
+        assert parallel_module._resolve_topology(topology) == kind
+
+    def test_invalid_topology_is_rejected(self):
+        with pytest.raises(ValueError, match="migration_topology"):
+            _parallel_island(migration_topology="mesh")
+
+    @pytest.mark.skipif(is_free_threaded(), reason="process-pool path unreachable")
+    @pytest.mark.parametrize("kind", ["fully_connected", "random", "star", "ladder"])
+    def test_run_routes_along_topology_and_keeps_migrant_fitness(self, kind, monkeypatch):
+        calls = []
+        original = parallel_module._migration_destinations
+
+        def spy(k, source, num_islands, rng):
+            dests = original(k, source, num_islands, rng)
+            calls.append((k, source, tuple(dests)))
+            return dests
+
+        monkeypatch.setattr(parallel_module, "_migration_destinations", spy)
+        model = _parallel_island(
+            fitness_fn=strictly_negative_fitness,
+            num_islands=4,
+            migration_topology=getattr(MigrationTopology, kind)(),
+        )
+        result = model.run()
+        assert calls and {c[0] for c in calls} == {kind}
+        if kind != "random":
+            edges = {(s, d) for _, s, ds in calls for d in ds}
+            assert edges == self.EXPECTED_EDGES[kind]
+        assert result.best_fitness < 0.0
+        assert result.best_fitness == pytest.approx(
+            strictly_negative_fitness(result.best_genes())
+        )
+
+    @pytest.mark.skipif(is_free_threaded(), reason="process-pool path unreachable")
+    def test_default_is_ring_and_seeded_runs_reproduce(self):
+        def run(**kw):
+            return _parallel_island(
+                fitness_fn=strictly_negative_fitness, num_islands=3, seed=5, **kw
+            ).run()
+
+        default = run()
+        ring = run(migration_topology=MigrationTopology.ring())
+        again = run()
+        assert default.fitness_history == ring.fitness_history == again.fitness_history
+        np.testing.assert_array_equal(default.best_genes(), ring.best_genes())
+        other = run(migration_topology=MigrationTopology.fully_connected())
+        assert other.fitness_history != default.fitness_history
+
+    @pytest.mark.skipif(is_free_threaded(), reason="process-pool path unreachable")
+    def test_facade_forwards_topology_without_warning(self):
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = GA(
+                strictly_negative_fitness,
+                genome_length=2,
+                bounds=(-5.0, 5.0),
+                population_size=16,
+                generations=3,
+                islands=2,
+                parallel=True,
+                n_workers=1,
+                migration_interval=1,
+                migration_count=1,
+                migration_topology=MigrationTopology.star(),
+                seed=1,
+            ).run()
+        assert result.strategy == "parallel_island"
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []

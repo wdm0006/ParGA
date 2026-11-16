@@ -518,6 +518,18 @@ impl PyMigrationTopology {
             inner: MigrationTopology::Ladder,
         }
     }
+
+    /// Topology kind: the name of the factory that built it.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.inner {
+            MigrationTopology::Ring => "ring",
+            MigrationTopology::FullyConnected => "fully_connected",
+            MigrationTopology::Random => "random",
+            MigrationTopology::Star => "star",
+            MigrationTopology::Ladder => "ladder",
+        }
+    }
 }
 
 /// Result of a genetic algorithm run.
