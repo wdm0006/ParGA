@@ -33,7 +33,11 @@ from typing import Callable
 import cloudpickle
 import numpy as np
 
-from ._validation import validate_ga_config, validate_island_config
+from ._validation import (
+    validate_ga_config,
+    validate_initial_population,
+    validate_island_config,
+)
 
 
 _worker_fitness_fn = None
@@ -447,6 +451,7 @@ class ParallelGA:
         selection_method: object | None = None,
         crossover_method: object | None = None,
         mutation_method: object | None = None,
+        initial_population: object | None = None,
         restart_on_stagnation: int | None = None,
         random_immigrants: int | None = None,
     ):
@@ -506,6 +511,17 @@ class ParallelGA:
             random_immigrants=random_immigrants,
         )
         _validate_selection(self._selection_op, population_size)
+        self._initial_population = (
+            None
+            if initial_population is None
+            else validate_initial_population(
+                initial_population,
+                genome_length=genome_length,
+                population_size=population_size,
+                lower_bounds=self.lower_bounds,
+                upper_bounds=self.upper_bounds,
+            )
+        )
 
     def _replace_with_random(
         self,
@@ -646,6 +662,9 @@ class ParallelGA:
 
         # Initialize population
         population = self._create_random_population(rng)
+        if self._initial_population is not None:
+            for i, genes in enumerate(self._initial_population):
+                population[i] = genes.copy()
         fitness_history = []
         best_individual = None
         best_fitness = float("-inf")
@@ -874,6 +893,7 @@ class ParallelIslandModel:
         crossover_method: object | None = None,
         mutation_method: object | None = None,
         migration_topology: object | None = None,
+        initial_population: object | None = None,
     ):
         warnings.warn(
             "ParallelIslandModel is deprecated. Use GA(islands=N) instead — "
@@ -933,6 +953,17 @@ class ParallelIslandModel:
             early_stopping=early_stopping,
         )
         _validate_selection(self._selection_op, island_population)
+        self._initial_population = (
+            None
+            if initial_population is None
+            else validate_initial_population(
+                initial_population,
+                genome_length=genome_length,
+                population_size=num_islands * island_population,
+                lower_bounds=self.lower_bounds,
+                upper_bounds=self.upper_bounds,
+            )
+        )
 
     def run(
         self,
@@ -964,6 +995,9 @@ class ParallelIslandModel:
             island = [rng.uniform(lower, upper) for _ in range(self.island_population)]
             islands.append(island)
             island_fitness.append([0.0] * self.island_population)
+        if self._initial_population is not None:
+            for i, genes in enumerate(self._initial_population):
+                islands[i % self.num_islands][i // self.num_islands] = genes.copy()
 
         best_individual = None
         best_fitness = float("-inf")

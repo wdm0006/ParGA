@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 
+import numpy as np
+
 
 def validate_ga_config(
     *,
@@ -76,3 +78,36 @@ def validate_island_config(
 def _validate_rate(name: str, value: float) -> None:
     if not math.isfinite(value) or not 0.0 <= value <= 1.0:
         raise ValueError(f"{name} must be finite and in [0, 1]")
+
+
+def validate_initial_population(
+    initial_population: object,
+    *,
+    genome_length: int,
+    population_size: int,
+    lower_bounds: Sequence[float],
+    upper_bounds: Sequence[float],
+) -> np.ndarray:
+    """Validate a warm-start population and return it clamped to the bounds.
+
+    ``population_size`` is the total number of individuals (all islands).
+    """
+    try:
+        array = np.array(initial_population, dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise ValueError("initial_population must be a 2-D numeric array") from error
+    if array.ndim != 2:
+        raise ValueError("initial_population must be a 2-D array")
+    if array.shape[1] != genome_length:
+        raise ValueError(
+            f"initial_population must have {genome_length} columns "
+            f"(genome_length), got {array.shape[1]}"
+        )
+    if array.shape[0] > population_size:
+        raise ValueError(
+            f"initial_population has {array.shape[0]} rows but the "
+            f"population size is {population_size}"
+        )
+    if not np.isfinite(array).all():
+        raise ValueError("initial_population must contain only finite values")
+    return np.clip(array, np.asarray(lower_bounds), np.asarray(upper_bounds))
