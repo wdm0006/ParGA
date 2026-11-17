@@ -39,7 +39,6 @@ from ._validation import (
     validate_island_config,
 )
 
-
 _worker_fitness_fn = None
 
 #: Improvement smaller than this counts as stagnation, matching the Rust engine.
@@ -190,7 +189,7 @@ def _select_indices(
         cumulative = np.cumsum(n - np.arange(n))
         picks = np.minimum(np.searchsorted(cumulative, targets, side="right"), n - 1)
     elif kind == "truncation":
-        cutoff = min(max(int(math.ceil(n * params["ratio"])), 1), n)
+        cutoff = min(max(math.ceil(n * params["ratio"]), 1), n)
         picks = np.arange(count) % cutoff
     elif kind in ("roulette", "stochastic_universal"):
         min_fitness = sorted_fit.min()
@@ -353,7 +352,7 @@ def _worker_init(fitness_fn_bytes: bytes) -> None:
 
     Called once per worker at pool startup via ProcessPoolExecutor initializer.
     """
-    global _worker_fitness_fn  # noqa: PLW0603
+    global _worker_fitness_fn
     _worker_fitness_fn = cloudpickle.loads(fitness_fn_bytes)
 
 
@@ -1022,8 +1021,9 @@ class ParallelIslandModel:
                 island_sizes.append(len(island))
 
             batches = []
-            for i in range(0, len(all_individuals), max(1, len(all_individuals) // (self.n_workers * 2))):
-                batches.append(all_individuals[i : i + max(1, len(all_individuals) // (self.n_workers * 2))])
+            batch_size = max(1, len(all_individuals) // (self.n_workers * 2))
+            for i in range(0, len(all_individuals), batch_size):
+                batches.append(all_individuals[i : i + batch_size])
 
             futures = [executor.submit(_evaluate_batch_worker, batch) for batch in batches]
             all_fitness_values = []
@@ -1092,8 +1092,12 @@ class ParallelIslandModel:
                     while len(new_island) < self.island_population:
                         if picks is None:
                             # Tournament selection
-                            indices1 = rng.choice(len(island), size=self.tournament_size, replace=False)
-                            indices2 = rng.choice(len(island), size=self.tournament_size, replace=False)
+                            indices1 = rng.choice(
+                                len(island), size=self.tournament_size, replace=False
+                            )
+                            indices2 = rng.choice(
+                                len(island), size=self.tournament_size, replace=False
+                            )
                             p1_idx = max(indices1, key=lambda i: fitness[i])
                             p2_idx = max(indices2, key=lambda i: fitness[i])
                         else:

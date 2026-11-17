@@ -5,8 +5,6 @@ import warnings
 import numpy as np
 import pytest
 
-from parga import parallel as parallel_module
-
 from parga import (
     GA,
     CrossoverMethod,
@@ -28,6 +26,7 @@ from parga import (
     set_num_threads,
     sphere,
 )
+from parga import parallel as parallel_module
 
 
 def simple_fitness(genes: np.ndarray) -> float:
@@ -1297,15 +1296,15 @@ class TestFacadeMigrationTopology:
         return -float(np.sum(np.asarray(genes, dtype=np.float64) ** 2))
 
     def _run(self, topology, seed=0):
-        kwargs = dict(
-            genome_length=6,
-            bounds=(-5.0, 5.0),
-            population_size=80,
-            generations=20,
-            islands=4,
-            seed=seed,
-            parallel=False,
-        )
+        kwargs = {
+            "genome_length": 6,
+            "bounds": (-5.0, 5.0),
+            "population_size": 80,
+            "generations": 20,
+            "islands": 4,
+            "seed": seed,
+            "parallel": False,
+        }
         if topology is not None:
             kwargs["migration_topology"] = topology
         return GA(self._sphere, **kwargs).run()
@@ -1490,14 +1489,14 @@ class TestFacadeCallback:
             np.testing.assert_array_equal(result.best_genes(), baseline.best_genes())
 
     def test_exception_propagates_unchanged(self, strategy):
-        class Boom(Exception):
+        class BoomError(Exception):
             pass
 
         def callback(generation, *_):
             if generation == 2:
-                raise Boom("stop here")
+                raise BoomError("stop here")
 
-        with pytest.raises(Boom, match="stop here"):
+        with pytest.raises(BoomError, match="stop here"):
             _facade_callback_ga(strategy, callback).run()
 
     def test_callback_runs_before_early_stopping_check(self, strategy):
@@ -1675,7 +1674,9 @@ class TestParallelCrossoverOperators:
     def test_simulated_binary_matches_the_spread_factor_formula(self):
         eta = 2.0
         u = np.random.default_rng(6).random(6)
-        beta = np.where(u <= 0.5, (2 * u) ** (1 / (eta + 1)), (1 / (2 * (1 - u))) ** (1 / (eta + 1)))
+        beta = np.where(
+            u <= 0.5, (2 * u) ** (1 / (eta + 1)), (1 / (2 * (1 - u))) ** (1 / (eta + 1))
+        )
         c1, c2 = parallel_module._recombine(
             "simulated_binary", {"eta": eta}, self.P1, self.P2, np.random.default_rng(6)
         )
@@ -1698,7 +1699,12 @@ class TestParallelMutationOperators:
 
     @pytest.mark.parametrize(
         "kind,params",
-        [("gaussian", {"sigma": 0.1}), ("uniform", {}), ("polynomial", {"eta": 20.0}), ("boundary", {})],
+        [
+            ("gaussian", {"sigma": 0.1}),
+            ("uniform", {}),
+            ("polynomial", {"eta": 20.0}),
+            ("boundary", {}),
+        ],
     )
     def test_rate_zero_leaves_genes_untouched(self, kind, params):
         out = self._mutate(kind, params, [1.0, 2.0, 3.0], [-5.0] * 3, [5.0] * 3, rate=0.0)
