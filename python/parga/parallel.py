@@ -108,6 +108,47 @@ def _resolve_operator(
     return kind, dict(params)
 
 
+_TOPOLOGY_KINDS = ("ring", "fully_connected", "random", "star", "ladder")
+
+
+def _resolve_topology(topology: object) -> str:
+    """Return the topology kind for a native wrapper or a kind string."""
+    if topology is None:
+        return "ring"
+    kind = topology if isinstance(topology, str) else getattr(topology, "kind", None)
+    if kind not in _TOPOLOGY_KINDS:
+        raise ValueError(
+            f"migration_topology must be one of {', '.join(_TOPOLOGY_KINDS)} "
+            f"(or a MigrationTopology), got {topology!r}"
+        )
+    return kind
+
+
+def _migration_destinations(
+    kind: str, source: int, num_islands: int, rng: np.random.Generator
+) -> list[int]:
+    """Destination islands for one migrant sent from ``source``.
+
+    Mirrors ``MigrationTopology::destinations``; ``random`` draws one
+    destination other than the source.
+    """
+    if kind == "ring":
+        return [(source + 1) % num_islands]
+    if kind == "fully_connected":
+        return [i for i in range(num_islands) if i != source]
+    if kind == "star":
+        return list(range(1, num_islands)) if source == 0 else [0]
+    if kind == "ladder":
+        dests = []
+        if source > 0:
+            dests.append(source - 1)
+        if source < num_islands - 1:
+            dests.append(source + 1)
+        return dests
+    dest = int(rng.integers(0, num_islands - 1))
+    return [dest + 1 if dest >= source else dest]
+
+
 def _select_indices(
     kind: str,
     params: dict,
@@ -851,6 +892,7 @@ class ParallelIslandModel:
         selection_method: object | None = None,
         crossover_method: object | None = None,
         mutation_method: object | None = None,
+        migration_topology: object | None = None,
         initial_population: object | None = None,
     ):
         warnings.warn(
@@ -882,6 +924,7 @@ class ParallelIslandModel:
         self.seed = seed
         self.early_stopping = early_stopping
         self.mutation_rate_end = mutation_rate_end
+        self._topology = _resolve_topology(migration_topology)
         self._selection_op = _resolve_operator(
             selection_method, "selection_method", _SELECTION_KINDS
         )
@@ -938,6 +981,9 @@ class ParallelIslandModel:
                 from 1). Returning a truthy value stops the run.
         """
         rng = np.random.default_rng(self.seed)
+        migration_rng = np.random.default_rng(
+            None if self.seed is None else [self.seed, 1]
+        )
 
         # Initialize islands (each is a list of individuals)
         islands = []
@@ -1116,7 +1162,7 @@ class ParallelIslandModel:
                     island_fitness[i] = all_new_fitness[offset : offset + size]
                     offset += size
 
-                # Migration (ring topology)
+                # Migration
                 if (gen + 1) % self.migration_interval == 0:
                     migrants = []
                     for i in range(self.num_islands):
@@ -1131,15 +1177,17 @@ class ParallelIslandModel:
                             [(islands[i][j].copy(), island_fitness[i][j]) for j in best_indices]
                         )
 
-                    # Send migrants to next island
+                    # Send migrants along the topology's edges
                     for i in range(self.num_islands):
-                        dest = (i + 1) % self.num_islands
                         for migrant, migrant_fitness in migrants[i]:
-                            # Replace worst individuals, carrying the migrant's
-                            # real fitness across (fitness is genome-intrinsic).
-                            worst_idx = np.argmin(island_fitness[dest])
-                            islands[dest][worst_idx] = migrant
-                            island_fitness[dest][worst_idx] = migrant_fitness
+                            for dest in _migration_destinations(
+                                self._topology, i, self.num_islands, migration_rng
+                            ):
+                                # Replace worst individuals, carrying the migrant's
+                                # real fitness across (fitness is genome-intrinsic).
+                                worst_idx = np.argmin(island_fitness[dest])
+                                islands[dest][worst_idx] = migrant
+                                island_fitness[dest][worst_idx] = migrant_fitness
 
                 # Track best
                 for island, fitness in zip(islands, island_fitness):
