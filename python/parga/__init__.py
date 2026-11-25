@@ -31,6 +31,10 @@ Example:
 # Visualization module (requires matplotlib)
 from parga import viz
 from parga._parga import (
+    BinaryCrossover,
+    BinaryGA,
+    BinaryMutation,
+    BinaryResult,
     CrossoverMethod,
     # Result types
     GaResult,
@@ -64,6 +68,10 @@ from parga.parallel import ParallelGA, ParallelGAResult, ParallelIslandModel
 __version__ = "0.1.0"
 __all__ = [
     "GA",
+    "BinaryCrossover",
+    "BinaryGA",
+    "BinaryMutation",
+    "BinaryResult",
     "CrossoverMethod",
     "GAResult",
     "GaResult",

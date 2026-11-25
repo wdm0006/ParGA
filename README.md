@@ -164,6 +164,40 @@ result.best_fitness     # float
 
 Defaults are order crossover and swap mutation. See [`examples/tsp_permutation.py`](examples/tsp_permutation.py).
 
+## Binary Problems (knapsack, feature selection)
+
+`BinaryGA` evolves bit strings. The fitness function receives a `bool` NumPy array of length `genome_length` and returns a finite float to maximize. It is a native-only class: the `GA` facade does not wrap it.
+
+```python
+import numpy as np
+from parga import BinaryCrossover, BinaryGA, BinaryMutation
+
+values = np.array([60, 100, 120, 80, 30, 90, 45, 70])
+weights = np.array([10, 20, 30, 15, 5, 25, 12, 18])
+capacity = 70
+
+def knapsack(bits):
+    if weights[bits].sum() > capacity:
+        return -1.0  # infeasible
+    return float(values[bits].sum())
+
+result = BinaryGA(
+    knapsack,
+    genome_length=len(values),
+    population_size=60,
+    generations=60,
+    mutation_rate=0.1,
+    seed=42,
+    crossover_method=BinaryCrossover.uniform(0.5),  # or single_point(), two_point()
+    mutation_method=BinaryMutation.bit_flip(),      # or single_bit_flip()
+).run()
+
+result.best_bits()      # np.ndarray[bool]: selected items
+result.best_fitness     # float
+```
+
+Defaults are two-point crossover and bit-flip mutation.
+
 ## Operators
 
 ### Selection Methods

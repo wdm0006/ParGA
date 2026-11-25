@@ -14,11 +14,11 @@ use pyo3::types::PyDict;
 use rayon::prelude::*;
 
 use crate::fitness::FitnessFunction;
-use crate::genome::{PermutationGenome, RealGenome};
+use crate::genome::{BinaryGenome, PermutationGenome, RealGenome};
 use crate::island::{IslandConfig, IslandModel, MigrationTopology};
 use crate::operators::{
-    crossover::{CrossoverOperator, PermutationCrossover, RealCrossover},
-    mutation::{MutationOperator, PermutationMutation, RealMutation},
+    crossover::{BinaryCrossover, CrossoverOperator, PermutationCrossover, RealCrossover},
+    mutation::{BinaryMutation, MutationOperator, PermutationMutation, RealMutation},
     selection::SelectionOperator,
 };
 use crate::population::Individual;
@@ -60,6 +60,10 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPermutationResult>()?;
     m.add_class::<PyPermutationCrossover>()?;
     m.add_class::<PyPermutationMutation>()?;
+    m.add_class::<PyBinaryGA>()?;
+    m.add_class::<PyBinaryResult>()?;
+    m.add_class::<PyBinaryCrossover>()?;
+    m.add_class::<PyBinaryMutation>()?;
 
     // Add utility functions
     m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
@@ -1411,6 +1415,242 @@ impl PyPermutationGA {
             generations: result.generations,
             converged: result.converged,
             best_order: order_to_i64(result.best_individual.genome.order()),
+            fitness_history: result.fitness_history,
+        })
+    }
+}
+
+/// Convert a binary genome to the bools handed to Python.
+fn bits_to_bools(genome: &BinaryGenome) -> Vec<bool> {
+    genome.bits().iter().map(|b| *b).collect()
+}
+
+impl FitnessFunction<BinaryGenome> for PyFitness {
+    fn evaluate(&self, genome: &BinaryGenome) -> f64 {
+        Python::with_gil(|py| {
+            let bits = bits_to_bools(genome);
+            self.call(py, bits.into_pyarray(py).into_any())
+        })
+    }
+}
+
+/// Crossover method for binary genomes.
+#[pyclass(name = "BinaryCrossover")]
+#[derive(Clone)]
+pub struct PyBinaryCrossover {
+    inner: BinaryCrossover,
+}
+
+#[pymethods]
+impl PyBinaryCrossover {
+    /// Single-point crossover.
+    #[staticmethod]
+    fn single_point() -> Self {
+        Self {
+            inner: BinaryCrossover::SinglePoint,
+        }
+    }
+
+    /// Two-point crossover.
+    #[staticmethod]
+    fn two_point() -> Self {
+        Self {
+            inner: BinaryCrossover::TwoPoint,
+        }
+    }
+
+    /// Uniform crossover; each bit comes from the first parent with probability `prob`.
+    #[staticmethod]
+    #[pyo3(signature = (prob=0.5))]
+    fn uniform(prob: f64) -> PyResult<Self> {
+        if !(0.0..=1.0).contains(&prob) {
+            return Err(PyValueError::new_err(format!(
+                "prob must be in [0, 1], got {prob}"
+            )));
+        }
+        Ok(Self {
+            inner: BinaryCrossover::Uniform(prob),
+        })
+    }
+}
+
+/// Mutation method for binary genomes.
+#[pyclass(name = "BinaryMutation")]
+#[derive(Clone)]
+pub struct PyBinaryMutation {
+    inner: BinaryMutation,
+}
+
+#[pymethods]
+impl PyBinaryMutation {
+    /// Flip each bit independently with the mutation rate.
+    #[staticmethod]
+    fn bit_flip() -> Self {
+        Self {
+            inner: BinaryMutation::BitFlip,
+        }
+    }
+
+    /// Flip one random bit.
+    #[staticmethod]
+    fn single_bit_flip() -> Self {
+        Self {
+            inner: BinaryMutation::SingleBitFlip,
+        }
+    }
+}
+
+/// Result of a binary genetic algorithm run.
+#[pyclass(name = "BinaryResult")]
+pub struct PyBinaryResult {
+    #[pyo3(get)]
+    best_fitness: f64,
+    #[pyo3(get)]
+    generations: usize,
+    #[pyo3(get)]
+    converged: bool,
+    best_bits: Vec<bool>,
+    fitness_history: Vec<f64>,
+}
+
+#[pymethods]
+impl PyBinaryResult {
+    /// Returns the best bit string as a bool numpy array.
+    fn best_bits<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<bool>> {
+        self.best_bits.clone().into_pyarray(py)
+    }
+
+    /// Returns the fitness history as a numpy array.
+    fn fitness_history<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.fitness_history.clone().into_pyarray(py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BinaryResult(best_fitness={:.6}, generations={}, converged={})",
+            self.best_fitness, self.generations, self.converged
+        )
+    }
+}
+
+/// Genetic algorithm over bit strings of length `genome_length`.
+#[pyclass(name = "BinaryGA")]
+pub struct PyBinaryGA {
+    config: GaConfig,
+    fitness_fn: PyObject,
+    selection: Option<SelectionOperator>,
+    crossover: BinaryCrossover,
+    mutation: BinaryMutation,
+}
+
+#[pymethods]
+impl PyBinaryGA {
+    /// Creates a new binary genetic algorithm.
+    ///
+    /// Args:
+    ///     fitness_fn: A callable that takes a bool numpy array of length
+    ///         `genome_length` and returns a finite float to maximize.
+    ///         NaN and +/-inf results are rejected with a RuntimeError.
+    ///     genome_length: Number of bits.
+    ///     population_size: Number of individuals in the population.
+    ///     generations: Number of generations to evolve.
+    ///     mutation_rate: Per-bit flip probability (bit_flip mutation).
+    ///     crossover_rate: Probability of crossover.
+    ///     elitism: Number of elite individuals to preserve.
+    ///     tournament_size: Tournament size for the default selection.
+    ///     seed: Random seed for reproducibility (optional).
+    ///     crossover_method: A `BinaryCrossover` (default: two_point).
+    ///     mutation_method: A `BinaryMutation` (default: bit_flip).
+    #[new]
+    #[pyo3(signature = (
+        fitness_fn,
+        genome_length,
+        population_size = 100,
+        generations = 100,
+        mutation_rate = 0.01,
+        crossover_rate = 0.8,
+        elitism = 2,
+        tournament_size = 3,
+        seed = None,
+        crossover_method = None,
+        mutation_method = None
+    ))]
+    fn new(
+        fitness_fn: PyObject,
+        genome_length: usize,
+        population_size: usize,
+        generations: usize,
+        mutation_rate: f64,
+        crossover_rate: f64,
+        elitism: usize,
+        tournament_size: usize,
+        seed: Option<u64>,
+        crossover_method: Option<PyBinaryCrossover>,
+        mutation_method: Option<PyBinaryMutation>,
+    ) -> PyResult<Self> {
+        let mut builder = GaConfig::builder();
+        builder
+            .population_size(population_size)
+            .genome_length(genome_length)
+            .generations(generations)
+            .mutation_rate(mutation_rate)
+            .crossover_rate(crossover_rate)
+            .elitism(elitism)
+            .tournament_size(tournament_size);
+        if let Some(s) = seed {
+            builder.seed(s);
+        }
+
+        let config = builder
+            .build()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        config
+            .validate()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        Ok(Self {
+            config,
+            fitness_fn,
+            selection: None,
+            crossover: crossover_method.map_or(BinaryCrossover::TwoPoint, |m| m.inner),
+            mutation: mutation_method.map_or(BinaryMutation::BitFlip, |m| m.inner),
+        })
+    }
+
+    /// Sets the selection method.
+    fn set_selection(&mut self, method: &PySelectionMethod) {
+        self.selection = Some(method.inner);
+    }
+
+    /// Runs the genetic algorithm.
+    fn run(&self, py: Python<'_>) -> PyResult<PyBinaryResult> {
+        let fitness = PyFitness::new(self.fitness_fn.clone_ref(py));
+        let error_slot = Arc::clone(&fitness.error);
+
+        let result = py.allow_threads(|| {
+            let mut ga: GeneticAlgorithm<BinaryGenome, PyFitness> =
+                GeneticAlgorithm::new(self.config.clone(), fitness).unwrap();
+
+            if let Some(selection) = self.selection {
+                ga = ga.with_selection(selection);
+            }
+
+            ga.with_crossover(CrossoverOperator::Binary(self.crossover))
+                .with_mutation(MutationOperator::Binary(self.mutation))
+                .run()
+        });
+
+        if let Some(message) = error_slot.lock().unwrap().take() {
+            return Err(PyRuntimeError::new_err(format!(
+                "fitness function failed: {message}"
+            )));
+        }
+
+        Ok(PyBinaryResult {
+            best_fitness: result.best_fitness,
+            generations: result.generations,
+            converged: result.converged,
+            best_bits: bits_to_bools(&result.best_individual.genome),
             fitness_history: result.fitness_history,
         })
     }
