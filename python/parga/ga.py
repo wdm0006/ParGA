@@ -18,6 +18,7 @@ Example:
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing as mp
 import time
 import warnings
@@ -42,7 +43,11 @@ from parga._parga import (
 )
 from parga.parallel import ParallelGA, ParallelIslandModel
 
-from ._validation import validate_ga_config, validate_island_config
+from ._validation import (
+    validate_ga_config,
+    validate_initial_population,
+    validate_island_config,
+)
 
 #: Constructor options that only the Rust execution paths honor, mapped to the
 #: strategies that actually apply them. The operator overrides reach every
@@ -54,10 +59,10 @@ from ._validation import validate_ga_config, validate_island_config
 #: ``early_stopping`` and ``mutation_rate_end`` are absent because every
 #: strategy applies them rather than dropping them.
 OPTION_SUPPORTED_STRATEGIES = {
-    "restart_on_stagnation": ("rust",),
+    "restart_on_stagnation": ("rust", "parallel"),
     "local_search_iters": ("rust",),
-    "random_immigrants": ("rust",),
-    "migration_topology": ("rust_island",),
+    "random_immigrants": ("rust", "parallel"),
+    "migration_topology": ("rust_island", "parallel_island"),
 }
 
 #: Names of the options in :data:`OPTION_SUPPORTED_STRATEGIES`. None of them
@@ -123,14 +128,26 @@ class GA:
         islands: Number of islands for island model. If > 1, uses island
                 model with migration. Default is 1 (no islands).
         migration_topology: Which islands may send migrants to which, as a
-                :class:`MigrationTopology`. Only the ``rust_island`` strategy
-                applies it; leave it as ``None`` to take that engine's default.
+                :class:`MigrationTopology`. Both island strategies apply it;
+                leave it as ``None`` to take the default (ring).
                 The choice is not cosmetic: on the standard multimodal
                 benchmarks a fully connected topology reaches a better optimum
                 than a ring at the same budget, because a ring slows how fast a
                 good solution can reach the islands that have not found it.
         n_workers: Number of worker processes for parallel execution.
                   Default is number of CPU cores.
+        initial_population: Optional 2-D float array of known-good candidates
+                (a warm start) with ``genome_length`` columns and at most
+                ``population_size`` rows. The rows replace the first random
+                individuals; the rest stay random, so a seeded run remains
+                reproducible, and ``None`` leaves the run unchanged. Genes
+                outside ``bounds`` are clamped. With ``islands > 1`` rows are
+                dealt round-robin across islands and counted against the
+                total (``islands * (population_size // islands)``). Applied by
+                every strategy; the seeds count toward generation 0, so
+                ``fitness_history[0]`` is at least the best seed's fitness.
+                Wrong shape, non-finite values or too many rows raise
+                ``ValueError``.
         mutation_rate: Probability of mutation per gene (default: 0.01).
         crossover_rate: Probability of crossover (default: 0.8).
         seed: Random seed for reproducibility.
@@ -158,11 +175,10 @@ class GA:
         - `crossover_method`, `mutation_method` and `selection_method` are
           applied by every strategy. The process-pool paths re-implement them
           in NumPy; `custom` mutation kinds are rejected there.
-        - `restart_on_stagnation`, `local_search_iters` and
-          `random_immigrants` are applied by `rust` only. They are
-          single-population settings that the low-level `IslandModel`
-          binding does not accept, so `islands > 1` drops them even with
-          `parallel=False`.
+        - `restart_on_stagnation` and `random_immigrants` are applied by
+          `rust` and `parallel`; `local_search_iters` by `rust` only. They
+          are single-population settings that neither island strategy
+          accepts, so `islands > 1` drops them.
 
         `early_stopping` and `mutation_rate_end` are applied by every
         strategy, so they are never part of that warning.
@@ -213,6 +229,7 @@ class GA:
         mutation_rate_end: float | None = None,
         random_immigrants: int | None = None,
         callback: Callable[[int, float, np.ndarray], bool | None] | None = None,
+        initial_population: np.ndarray | None = None,
     ):
         self.fitness_fn = fitness_fn
         self.genome_length = genome_length
@@ -278,6 +295,18 @@ class GA:
                 migration_count=migration_count,
                 **validation_args,
             )
+
+        self.initial_population = (
+            None
+            if initial_population is None
+            else validate_initial_population(
+                initial_population,
+                genome_length=genome_length,
+                population_size=(population_size // islands) * islands,
+                lower_bounds=self.lower_bounds,
+                upper_bounds=self.upper_bounds,
+            )
+        )
 
         # Operator overrides
         self.crossover_method = crossover_method
@@ -393,10 +422,8 @@ class GA:
 
         # On free-threaded Python, configure rayon thread pool size
         if is_free_threaded() and self._strategy in ("rust", "rust_island"):
-            try:
+            with contextlib.suppress(ValueError):  # Thread pool already initialized
                 set_num_threads(self.n_workers)
-            except ValueError:
-                pass  # Thread pool already initialized
 
         if self._strategy == "rust":
             return self._run_rust()
@@ -408,6 +435,11 @@ class GA:
             return self._run_parallel_island()
         else:
             raise ValueError(f"Unknown strategy: {self._strategy}")
+
+    def _initial_rows(self) -> list[list[float]] | None:
+        if self.initial_population is None:
+            return None
+        return self.initial_population.tolist()
 
     def _run_rust(self) -> GAResult:
         """Run using Rust-based single-threaded GA."""
@@ -428,6 +460,7 @@ class GA:
             local_search_iters=self.local_search_iters,
             mutation_rate_end=self.mutation_rate_end,
             random_immigrants=self.random_immigrants,
+            initial_population=self._initial_rows(),
         )
         if self.crossover_method is not None:
             ga.set_crossover(self.crossover_method)
@@ -464,6 +497,9 @@ class GA:
             selection_method=self.selection_method,
             crossover_method=self.crossover_method,
             mutation_method=self.mutation_method,
+            initial_population=self.initial_population,
+            restart_on_stagnation=self.restart_on_stagnation,
+            random_immigrants=self.random_immigrants,
         )
         result = ga.run(self.callback)
         return GAResult(
@@ -495,6 +531,7 @@ class GA:
             early_stopping=self.early_stopping,
             mutation_rate_end=self.mutation_rate_end,
             **({} if self.migration_topology is None else {"topology": self.migration_topology}),
+            initial_population=self._initial_rows(),
         )
         if self.crossover_method is not None:
             ga.set_crossover(self.crossover_method)
@@ -535,6 +572,8 @@ class GA:
             selection_method=self.selection_method,
             crossover_method=self.crossover_method,
             mutation_method=self.mutation_method,
+            migration_topology=self.migration_topology,
+            initial_population=self.initial_population,
         )
         result = ga.run(self.callback)
         return GAResult(

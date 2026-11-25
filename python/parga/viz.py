@@ -58,8 +58,8 @@ def plot_convergence(
     save_path: str | Path | None = None,
     show: bool = True,
     log_scale: bool = False,
-    ax: "plt.Axes | None" = None,
-) -> "Figure | None":
+    ax: plt.Axes | None = None,
+) -> Figure | None:
     """Plot fitness convergence over generations.
 
     Args:
@@ -116,7 +116,7 @@ def plot_convergence_comparison(
     save_path: str | Path | None = None,
     show: bool = True,
     log_scale: bool = False,
-) -> "Figure":
+) -> Figure:
     """Plot multiple convergence curves for comparison.
 
     Args:
@@ -161,7 +161,7 @@ def plot_convergence_comparison(
 
 
 def plot_2d_landscape(
-    fitness_fn: "Callable[[np.ndarray], float]",
+    fitness_fn: Callable[[np.ndarray], float],
     bounds: tuple[float, float],
     resolution: int = 100,
     title: str = "Fitness Landscape",
@@ -171,7 +171,7 @@ def plot_2d_landscape(
     show: bool = True,
     cmap: str = "viridis",
     contour_levels: int = 20,
-) -> "Figure":
+) -> Figure:
     """Plot 2D fitness landscape with optional best solution marker.
 
     Args:
@@ -194,9 +194,9 @@ def plot_2d_landscape(
     lower, upper = bounds
     x = np.linspace(lower, upper, resolution)
     y = np.linspace(lower, upper, resolution)
-    X, Y = np.meshgrid(x, y)
+    X, Y = np.meshgrid(x, y)  # noqa: N806
 
-    Z = np.zeros_like(X)
+    Z = np.zeros_like(X)  # noqa: N806
     for i in range(resolution):
         for j in range(resolution):
             Z[i, j] = fitness_fn(np.array([X[i, j], Y[i, j]]))
@@ -242,7 +242,7 @@ def plot_parameter_sensitivity(
     figsize: tuple[float, float] = (10, 6),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot how fitness varies with a parameter.
 
     Args:
@@ -284,7 +284,7 @@ def plot_population_diversity(
     figsize: tuple[float, float] = (10, 6),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot population diversity (standard deviation) over generations.
 
     Args:
@@ -335,7 +335,7 @@ def plot_pareto_front(
     figsize: tuple[float, float] = (10, 8),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot solutions in 2D objective space with optional Pareto front.
 
     Args:
@@ -364,12 +364,15 @@ def plot_pareto_front(
         is_pareto = np.ones(len(obj1), dtype=bool)
         for i in range(len(obj1)):
             for j in range(len(obj1)):
-                if i != j:
-                    # j dominates i if j is better in both objectives
-                    if obj1[j] <= obj1[i] and obj2[j] <= obj2[i]:
-                        if obj1[j] < obj1[i] or obj2[j] < obj2[i]:
-                            is_pareto[i] = False
-                            break
+                # j dominates i if j is better in both objectives
+                if (
+                    i != j
+                    and obj1[j] <= obj1[i]
+                    and obj2[j] <= obj2[i]
+                    and (obj1[j] < obj1[i] or obj2[j] < obj2[i])
+                ):
+                    is_pareto[i] = False
+                    break
 
         # Plot non-Pareto points
         ax.scatter(
@@ -426,7 +429,7 @@ def plot_fitness_distribution(
     figsize: tuple[float, float] = (10, 6),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot histogram of fitness values in a population.
 
     Args:
@@ -483,7 +486,7 @@ def plot_gene_distribution(
     figsize: tuple[float, float] = (12, 6),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot bar chart of gene values in the best solution.
 
     Args:
@@ -506,7 +509,7 @@ def plot_gene_distribution(
         gene_names = [f"Gene {i}" for i in range(n_genes)]
 
     colors = plt.cm.viridis(np.linspace(0.2, 0.8, n_genes))
-    bars = ax.bar(range(n_genes), best_genes, color=colors, edgecolor="black")
+    ax.bar(range(n_genes), best_genes, color=colors, edgecolor="black")
 
     ax.set_xticks(range(n_genes))
     ax.set_xticklabels(gene_names, rotation=45, ha="right")
@@ -534,7 +537,7 @@ def plot_3d_cluster(
     show: bool = True,
     elev: float = 20,
     azim: float = 45,
-) -> "Figure":
+) -> Figure:
     """Plot 3D atomic cluster configuration.
 
     Args:
@@ -610,7 +613,7 @@ def plot_thrust_profile(
     figsize: tuple[float, float] = (12, 6),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot target vs simulated thrust curves.
 
     Args:
@@ -677,7 +680,7 @@ def plot_composition_bar(
     figsize: tuple[float, float] = (10, 6),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot bar chart of alloy composition.
 
     Args:
@@ -736,7 +739,7 @@ def plot_properties_radar(
     figsize: tuple[float, float] = (10, 10),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot radar/spider chart of material properties.
 
     Args:
@@ -757,10 +760,7 @@ def plot_properties_radar(
     n = len(labels)
 
     # Normalize values to 0-1 range for radar plot
-    if targets:
-        max_vals = [max(v, targets.get(k, v)) for k, v in properties.items()]
-    else:
-        max_vals = values
+    max_vals = [max(v, targets.get(k, v)) for k, v in properties.items()] if targets else values
     normalized = [v / m if m > 0 else 0 for v, m in zip(values, max_vals)]
 
     # Compute angles
@@ -768,13 +768,15 @@ def plot_properties_radar(
     angles += angles[:1]  # Complete the loop
     normalized += normalized[:1]
 
-    fig, ax = plt.subplots(figsize=figsize, subplot_kw=dict(polar=True))
+    fig, ax = plt.subplots(figsize=figsize, subplot_kw={"polar": True})
 
     ax.plot(angles, normalized, "b-", linewidth=2, label="Achieved")
     ax.fill(angles, normalized, alpha=0.25, color="blue")
 
     if targets:
-        target_normalized = [targets.get(k, 0) / m if m > 0 else 0 for k, m in zip(labels, max_vals)]
+        target_normalized = [
+            targets.get(k, 0) / m if m > 0 else 0 for k, m in zip(labels, max_vals)
+        ]
         target_normalized += target_normalized[:1]
         ax.plot(angles, target_normalized, "r--", linewidth=2, label="Target")
 
@@ -799,7 +801,7 @@ def plot_lattice_protein(
     figsize: tuple[float, float] = (10, 10),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Plot 2D lattice protein fold.
 
     Args:
@@ -892,7 +894,7 @@ def create_summary_figure(
     figsize: tuple[float, float] = (14, 6),
     save_path: str | Path | None = None,
     show: bool = True,
-) -> "Figure":
+) -> Figure:
     """Create a summary figure with convergence and solution.
 
     Args:

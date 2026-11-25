@@ -33,8 +33,11 @@ from typing import Callable
 import cloudpickle
 import numpy as np
 
-from ._validation import validate_ga_config, validate_island_config
-
+from ._validation import (
+    validate_ga_config,
+    validate_initial_population,
+    validate_island_config,
+)
 
 _worker_fitness_fn = None
 
@@ -104,6 +107,47 @@ def _resolve_operator(
     return kind, dict(params)
 
 
+_TOPOLOGY_KINDS = ("ring", "fully_connected", "random", "star", "ladder")
+
+
+def _resolve_topology(topology: object) -> str:
+    """Return the topology kind for a native wrapper or a kind string."""
+    if topology is None:
+        return "ring"
+    kind = topology if isinstance(topology, str) else getattr(topology, "kind", None)
+    if kind not in _TOPOLOGY_KINDS:
+        raise ValueError(
+            f"migration_topology must be one of {', '.join(_TOPOLOGY_KINDS)} "
+            f"(or a MigrationTopology), got {topology!r}"
+        )
+    return kind
+
+
+def _migration_destinations(
+    kind: str, source: int, num_islands: int, rng: np.random.Generator
+) -> list[int]:
+    """Destination islands for one migrant sent from ``source``.
+
+    Mirrors ``MigrationTopology::destinations``; ``random`` draws one
+    destination other than the source.
+    """
+    if kind == "ring":
+        return [(source + 1) % num_islands]
+    if kind == "fully_connected":
+        return [i for i in range(num_islands) if i != source]
+    if kind == "star":
+        return list(range(1, num_islands)) if source == 0 else [0]
+    if kind == "ladder":
+        dests = []
+        if source > 0:
+            dests.append(source - 1)
+        if source < num_islands - 1:
+            dests.append(source + 1)
+        return dests
+    dest = int(rng.integers(0, num_islands - 1))
+    return [dest + 1 if dest >= source else dest]
+
+
 def _select_indices(
     kind: str,
     params: dict,
@@ -145,7 +189,7 @@ def _select_indices(
         cumulative = np.cumsum(n - np.arange(n))
         picks = np.minimum(np.searchsorted(cumulative, targets, side="right"), n - 1)
     elif kind == "truncation":
-        cutoff = min(max(int(math.ceil(n * params["ratio"])), 1), n)
+        cutoff = min(max(math.ceil(n * params["ratio"]), 1), n)
         picks = np.arange(count) % cutoff
     elif kind in ("roulette", "stochastic_universal"):
         min_fitness = sorted_fit.min()
@@ -308,7 +352,7 @@ def _worker_init(fitness_fn_bytes: bytes) -> None:
 
     Called once per worker at pool startup via ProcessPoolExecutor initializer.
     """
-    global _worker_fitness_fn  # noqa: PLW0603
+    global _worker_fitness_fn
     _worker_fitness_fn = cloudpickle.loads(fitness_fn_bytes)
 
 
@@ -379,6 +423,11 @@ class ParallelGA:
             (alpha 0.5).
         mutation_method: Optional ``MutationMethod`` replacing Gaussian
             mutation (sigma 0.1 of each gene's range).
+        restart_on_stagnation: Re-randomize every non-elite individual each
+            time this many consecutive generations pass without improvement.
+            When set, ``early_stopping`` is ignored (as in the Rust engine).
+        random_immigrants: Replace this many of the worst individuals with
+            fresh random ones every generation. 0 is a no-op.
     """
 
     def __init__(
@@ -401,6 +450,9 @@ class ParallelGA:
         selection_method: object | None = None,
         crossover_method: object | None = None,
         mutation_method: object | None = None,
+        initial_population: object | None = None,
+        restart_on_stagnation: int | None = None,
+        random_immigrants: int | None = None,
     ):
         warnings.warn(
             "ParallelGA is deprecated. Use GA() instead — on free-threaded "
@@ -429,6 +481,8 @@ class ParallelGA:
         self.chunk_size = chunk_size or max(1, population_size // (self.n_workers * 2))
         self.early_stopping = early_stopping
         self.mutation_rate_end = mutation_rate_end
+        self.restart_on_stagnation = restart_on_stagnation
+        self.random_immigrants = random_immigrants
         self._selection_op = _resolve_operator(
             selection_method, "selection_method", _SELECTION_KINDS
         )
@@ -452,8 +506,41 @@ class ParallelGA:
             upper_bounds=self.upper_bounds,
             mutation_rate_end=mutation_rate_end,
             early_stopping=early_stopping,
+            restart_on_stagnation=restart_on_stagnation,
+            random_immigrants=random_immigrants,
         )
         _validate_selection(self._selection_op, population_size)
+        self._initial_population = (
+            None
+            if initial_population is None
+            else validate_initial_population(
+                initial_population,
+                genome_length=genome_length,
+                population_size=population_size,
+                lower_bounds=self.lower_bounds,
+                upper_bounds=self.upper_bounds,
+            )
+        )
+
+    def _replace_with_random(
+        self,
+        population: list[np.ndarray],
+        fitness: list[float],
+        indices: np.ndarray,
+        executor: ProcessPoolExecutor,
+        rng: np.random.Generator,
+    ) -> tuple[list[np.ndarray], list[float]]:
+        """Replace ``indices`` with fresh random genomes and evaluate them."""
+        lower = np.array(self.lower_bounds)
+        upper = np.array(self.upper_bounds)
+        population = list(population)
+        new_fitness: list[float | None] = list(fitness)
+        for i in indices:
+            population[i] = rng.uniform(lower, upper)
+            new_fitness[i] = None
+        return population, self._evaluate_parallel(
+            population, executor, existing_fitness=new_fitness
+        )
 
     def _create_random_population(self, rng: np.random.Generator) -> list[np.ndarray]:
         """Create initial random population."""
@@ -574,6 +661,9 @@ class ParallelGA:
 
         # Initialize population
         population = self._create_random_population(rng)
+        if self._initial_population is not None:
+            for i, genes in enumerate(self._initial_population):
+                population[i] = genes.copy()
         fitness_history = []
         best_individual = None
         best_fitness = float("-inf")
@@ -666,12 +756,21 @@ class ParallelGA:
                     population, executor, existing_fitness=new_fitness
                 )
 
+                if self.random_immigrants:
+                    order = np.argsort(-np.array(fitness), kind="stable")
+                    population, fitness = self._replace_with_random(
+                        population,
+                        fitness,
+                        order[self.population_size - self.random_immigrants :],
+                        executor,
+                        rng,
+                    )
+
                 # Track best
                 for i, f in enumerate(fitness):
                     if f > best_fitness:
                         best_fitness = f
                         best_individual = population[i].copy()
-                fitness_history.append(best_fitness)
                 generations_evolved = gen + 1
 
                 if best_fitness > best_so_far + _STAGNATION_EPSILON:
@@ -680,13 +779,28 @@ class ParallelGA:
                 else:
                     stagnation_count += 1
 
+                patience = self.restart_on_stagnation
+                if patience is not None and stagnation_count % patience == 0 and (
+                    stagnation_count >= patience
+                ):
+                    order = np.argsort(-np.array(fitness), kind="stable")
+                    population, fitness = self._replace_with_random(
+                        population, fitness, order[self.elitism :], executor, rng
+                    )
+                    for i, f in enumerate(fitness):
+                        if f > best_fitness:
+                            best_fitness = f
+                            best_individual = population[i].copy()
+                fitness_history.append(best_fitness)
+
                 if callback is not None and callback(
                     generations_evolved, best_fitness, best_individual.copy()
                 ):
                     break
 
                 if (
-                    self.early_stopping is not None
+                    self.restart_on_stagnation is None
+                    and self.early_stopping is not None
                     and stagnation_count >= self.early_stopping
                 ):
                     break
@@ -777,6 +891,8 @@ class ParallelIslandModel:
         selection_method: object | None = None,
         crossover_method: object | None = None,
         mutation_method: object | None = None,
+        migration_topology: object | None = None,
+        initial_population: object | None = None,
     ):
         warnings.warn(
             "ParallelIslandModel is deprecated. Use GA(islands=N) instead — "
@@ -807,6 +923,7 @@ class ParallelIslandModel:
         self.seed = seed
         self.early_stopping = early_stopping
         self.mutation_rate_end = mutation_rate_end
+        self._topology = _resolve_topology(migration_topology)
         self._selection_op = _resolve_operator(
             selection_method, "selection_method", _SELECTION_KINDS
         )
@@ -835,6 +952,17 @@ class ParallelIslandModel:
             early_stopping=early_stopping,
         )
         _validate_selection(self._selection_op, island_population)
+        self._initial_population = (
+            None
+            if initial_population is None
+            else validate_initial_population(
+                initial_population,
+                genome_length=genome_length,
+                population_size=num_islands * island_population,
+                lower_bounds=self.lower_bounds,
+                upper_bounds=self.upper_bounds,
+            )
+        )
 
     def run(
         self,
@@ -852,6 +980,9 @@ class ParallelIslandModel:
                 from 1). Returning a truthy value stops the run.
         """
         rng = np.random.default_rng(self.seed)
+        migration_rng = np.random.default_rng(
+            None if self.seed is None else [self.seed, 1]
+        )
 
         # Initialize islands (each is a list of individuals)
         islands = []
@@ -863,6 +994,9 @@ class ParallelIslandModel:
             island = [rng.uniform(lower, upper) for _ in range(self.island_population)]
             islands.append(island)
             island_fitness.append([0.0] * self.island_population)
+        if self._initial_population is not None:
+            for i, genes in enumerate(self._initial_population):
+                islands[i % self.num_islands][i // self.num_islands] = genes.copy()
 
         best_individual = None
         best_fitness = float("-inf")
@@ -887,8 +1021,9 @@ class ParallelIslandModel:
                 island_sizes.append(len(island))
 
             batches = []
-            for i in range(0, len(all_individuals), max(1, len(all_individuals) // (self.n_workers * 2))):
-                batches.append(all_individuals[i : i + max(1, len(all_individuals) // (self.n_workers * 2))])
+            batch_size = max(1, len(all_individuals) // (self.n_workers * 2))
+            for i in range(0, len(all_individuals), batch_size):
+                batches.append(all_individuals[i : i + batch_size])
 
             futures = [executor.submit(_evaluate_batch_worker, batch) for batch in batches]
             all_fitness_values = []
@@ -957,8 +1092,12 @@ class ParallelIslandModel:
                     while len(new_island) < self.island_population:
                         if picks is None:
                             # Tournament selection
-                            indices1 = rng.choice(len(island), size=self.tournament_size, replace=False)
-                            indices2 = rng.choice(len(island), size=self.tournament_size, replace=False)
+                            indices1 = rng.choice(
+                                len(island), size=self.tournament_size, replace=False
+                            )
+                            indices2 = rng.choice(
+                                len(island), size=self.tournament_size, replace=False
+                            )
                             p1_idx = max(indices1, key=lambda i: fitness[i])
                             p2_idx = max(indices2, key=lambda i: fitness[i])
                         else:
@@ -1027,7 +1166,7 @@ class ParallelIslandModel:
                     island_fitness[i] = all_new_fitness[offset : offset + size]
                     offset += size
 
-                # Migration (ring topology)
+                # Migration
                 if (gen + 1) % self.migration_interval == 0:
                     migrants = []
                     for i in range(self.num_islands):
@@ -1042,15 +1181,17 @@ class ParallelIslandModel:
                             [(islands[i][j].copy(), island_fitness[i][j]) for j in best_indices]
                         )
 
-                    # Send migrants to next island
+                    # Send migrants along the topology's edges
                     for i in range(self.num_islands):
-                        dest = (i + 1) % self.num_islands
                         for migrant, migrant_fitness in migrants[i]:
-                            # Replace worst individuals, carrying the migrant's
-                            # real fitness across (fitness is genome-intrinsic).
-                            worst_idx = np.argmin(island_fitness[dest])
-                            islands[dest][worst_idx] = migrant
-                            island_fitness[dest][worst_idx] = migrant_fitness
+                            for dest in _migration_destinations(
+                                self._topology, i, self.num_islands, migration_rng
+                            ):
+                                # Replace worst individuals, carrying the migrant's
+                                # real fitness across (fitness is genome-intrinsic).
+                                worst_idx = np.argmin(island_fitness[dest])
+                                islands[dest][worst_idx] = migrant
+                                island_fitness[dest][worst_idx] = migrant_fitness
 
                 # Track best
                 for island, fitness in zip(islands, island_fitness):

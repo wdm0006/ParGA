@@ -59,18 +59,35 @@ jobs:
       - name: Build docs
         run: cargo doc --no-deps
 
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff==0.17.5
+
+      - name: Ruff check
+        run: ruff check python/
+
   python-test:
     name: Python Tests
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         python-version: ['3.9', '3.10', '3.11', '3.12']
         # Add standard Python 3.13 on Linux only to avoid multiplying the
         # full OS/version matrix.
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python-version: '3.13'
 
     steps:

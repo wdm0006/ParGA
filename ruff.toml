@@ -47,6 +47,7 @@ ignore = [
 "python/tests/*" = [
     "D",      # No docstrings required in tests
     "ARG",    # Unused arguments OK in tests (fixtures)
+    "E501",   # Long lines OK in parametrized/data-table tests
 ]
 "examples/*" = [
     "D",      # No docstrings required in examples

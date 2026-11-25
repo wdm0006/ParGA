@@ -291,6 +291,36 @@ where
         })
     }
 
+    /// Seeds the islands with known candidates (warm start).
+    ///
+    /// Genomes are distributed round-robin across islands (genome `i` goes to
+    /// island `i % num_islands`), replacing the first random individuals of
+    /// each island. The rest stay random. Genes are clamped to the bounds.
+    ///
+    /// # Errors
+    /// Returns a configuration error when more genomes than the total
+    /// population are supplied or a genome's length differs from
+    /// `genome_length`.
+    pub fn with_initial_population(mut self, genomes: Vec<G>) -> crate::Result<Self> {
+        if genomes.len() > self.config.num_islands * self.config.island_population {
+            return Err(crate::Error::Config(
+                "initial population must not exceed total population".into(),
+            ));
+        }
+        let (lower, upper) = self.config.bounds();
+        let n = self.config.num_islands;
+        for (i, mut genome) in genomes.into_iter().enumerate() {
+            if genome.len() != self.config.genome_length {
+                return Err(crate::Error::Config(
+                    "initial genome length must match genome_length".into(),
+                ));
+            }
+            genome.clamp_to_bounds(&lower, &upper);
+            self.islands[i % n].individuals_mut()[i / n] = Individual::new(genome);
+        }
+        Ok(self)
+    }
+
     /// Sets the selection operator.
     pub fn with_selection(mut self, selection: SelectionOperator) -> Self {
         self.selection = selection;

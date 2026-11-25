@@ -5,8 +5,6 @@ import warnings
 import numpy as np
 import pytest
 
-from parga import parallel as parallel_module
-
 from parga import (
     GA,
     CrossoverMethod,
@@ -28,6 +26,7 @@ from parga import (
     set_num_threads,
     sphere,
 )
+from parga import parallel as parallel_module
 
 
 def simple_fitness(genes: np.ndarray) -> float:
@@ -933,7 +932,7 @@ class TestFacade:
             selection_method=SelectionMethod.rank(),
             crossover_method=CrossoverMethod.arithmetic(),
             mutation_method=MutationMethod.uniform(),
-            restart_on_stagnation=5,
+            local_search_iters=2,
             early_stopping=5,
             mutation_rate_end=0.0,
         )
@@ -944,7 +943,7 @@ class TestFacade:
         messages = [str(w.message) for w in record if issubclass(w.category, UserWarning)]
         assert len(messages) == 1
         message = messages[0]
-        assert "restart_on_stagnation" in message
+        assert "local_search_iters" in message
         assert strategy in message
         # Operator overrides are applied by the process-pool engines now.
         for name in ("selection_method", "crossover_method", "mutation_method"):
@@ -953,7 +952,8 @@ class TestFacade:
         assert "mutation_rate" not in message
         assert "early_stopping" not in message
         # Unset advanced options must not be named either.
-        assert "local_search_iters" not in message
+        assert "restart_on_stagnation" not in message
+        assert "random_immigrants" not in message
 
     @pytest.mark.skipif(
         is_free_threaded(),
@@ -1296,15 +1296,15 @@ class TestFacadeMigrationTopology:
         return -float(np.sum(np.asarray(genes, dtype=np.float64) ** 2))
 
     def _run(self, topology, seed=0):
-        kwargs = dict(
-            genome_length=6,
-            bounds=(-5.0, 5.0),
-            population_size=80,
-            generations=20,
-            islands=4,
-            seed=seed,
-            parallel=False,
-        )
+        kwargs = {
+            "genome_length": 6,
+            "bounds": (-5.0, 5.0),
+            "population_size": 80,
+            "generations": 20,
+            "islands": 4,
+            "seed": seed,
+            "parallel": False,
+        }
         if topology is not None:
             kwargs["migration_topology"] = topology
         return GA(self._sphere, **kwargs).run()
@@ -1489,14 +1489,14 @@ class TestFacadeCallback:
             np.testing.assert_array_equal(result.best_genes(), baseline.best_genes())
 
     def test_exception_propagates_unchanged(self, strategy):
-        class Boom(Exception):
+        class BoomError(Exception):
             pass
 
         def callback(generation, *_):
             if generation == 2:
-                raise Boom("stop here")
+                raise BoomError("stop here")
 
-        with pytest.raises(Boom, match="stop here"):
+        with pytest.raises(BoomError, match="stop here"):
             _facade_callback_ga(strategy, callback).run()
 
     def test_callback_runs_before_early_stopping_check(self, strategy):
@@ -1674,7 +1674,9 @@ class TestParallelCrossoverOperators:
     def test_simulated_binary_matches_the_spread_factor_formula(self):
         eta = 2.0
         u = np.random.default_rng(6).random(6)
-        beta = np.where(u <= 0.5, (2 * u) ** (1 / (eta + 1)), (1 / (2 * (1 - u))) ** (1 / (eta + 1)))
+        beta = np.where(
+            u <= 0.5, (2 * u) ** (1 / (eta + 1)), (1 / (2 * (1 - u))) ** (1 / (eta + 1))
+        )
         c1, c2 = parallel_module._recombine(
             "simulated_binary", {"eta": eta}, self.P1, self.P2, np.random.default_rng(6)
         )
@@ -1697,7 +1699,12 @@ class TestParallelMutationOperators:
 
     @pytest.mark.parametrize(
         "kind,params",
-        [("gaussian", {"sigma": 0.1}), ("uniform", {}), ("polynomial", {"eta": 20.0}), ("boundary", {})],
+        [
+            ("gaussian", {"sigma": 0.1}),
+            ("uniform", {}),
+            ("polynomial", {"eta": 20.0}),
+            ("boundary", {}),
+        ],
     )
     def test_rate_zero_leaves_genes_untouched(self, kind, params):
         out = self._mutate(kind, params, [1.0, 2.0, 3.0], [-5.0] * 3, [5.0] * 3, rate=0.0)
@@ -1949,4 +1956,334 @@ class TestParallelEngineOperators:
 
         assert result.strategy == strategy
         assert set(seen) == {"rank"}
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+
+def abs_sum_fitness(genes: np.ndarray) -> float:
+    return float(np.sum(np.abs(genes)))
+
+
+_WARM_START_STRATEGIES = [
+    pytest.param(False, 1, "rust", id="rust"),
+    pytest.param(
+        True,
+        1,
+        "parallel",
+        id="parallel",
+        marks=pytest.mark.skipif(is_free_threaded(), reason="forces Rust"),
+    ),
+    pytest.param(False, 2, "rust_island", id="rust_island"),
+    pytest.param(
+        True,
+        2,
+        "parallel_island",
+        id="parallel_island",
+        marks=pytest.mark.skipif(is_free_threaded(), reason="forces Rust"),
+    ),
+]
+
+
+def _warm_start_ga(parallel, islands, fitness=simple_fitness, **overrides):
+    kwargs = {
+        "fitness_fn": fitness,
+        "genome_length": 3,
+        "population_size": 8,
+        "generations": 2,
+        "bounds": (-5.0, 5.0),
+        "parallel": parallel,
+        "islands": islands,
+        "n_workers": 1,
+        "seed": 3,
+    }
+    if islands > 1:
+        kwargs.update(migration_interval=1, migration_count=1)
+    kwargs.update(overrides)
+    return GA(**kwargs)
+
+
+class TestWarmStart:
+    @pytest.mark.parametrize(("parallel", "islands", "strategy"), _WARM_START_STRATEGIES)
+    def test_seeding_the_optimum_sets_generation_zero_best(
+        self, parallel, islands, strategy
+    ):
+        ga = _warm_start_ga(
+            parallel, islands, initial_population=np.zeros((1, 3))
+        )
+        result = ga.run()
+        assert result.strategy == strategy
+        # Sphere's optimum scores 0.0; random draws in [-5, 5] never hit it.
+        assert result.fitness_history[0] == 0.0
+        assert result.best_fitness == 0.0
+
+    @pytest.mark.parametrize(("parallel", "islands", "strategy"), _WARM_START_STRATEGIES)
+    def test_out_of_bounds_rows_are_clamped(self, parallel, islands, strategy):
+        ga = _warm_start_ga(
+            parallel,
+            islands,
+            fitness=abs_sum_fitness,
+            initial_population=[[100.0, -100.0, 100.0]],
+        )
+        result = ga.run()
+        assert result.strategy == strategy
+        # Only the clamped seed reaches 15; unclamped it would score 300.
+        assert result.fitness_history[0] == 15.0
+        assert result.best_fitness == 15.0
+
+    @pytest.mark.parametrize(("parallel", "islands", "strategy"), _WARM_START_STRATEGIES)
+    def test_every_seed_row_is_used(self, parallel, islands, strategy):
+        # Full-size seed: the best row must be found whichever island holds it.
+        rows = np.full((8, 3), 4.0)
+        rows[5] = 0.0
+        ga = _warm_start_ga(parallel, islands, initial_population=rows)
+        result = ga.run()
+        assert result.strategy == strategy
+        assert result.fitness_history[0] == 0.0
+
+    def test_seeded_run_is_reproducible(self):
+        seed_rows = np.array([[1.0, 2.0, 3.0]])
+        results = [
+            _warm_start_ga(False, 1, initial_population=seed_rows).run()
+            for _ in range(2)
+        ]
+        assert results[0].fitness_history == results[1].fitness_history
+        np.testing.assert_array_equal(
+            results[0].best_genes(), results[1].best_genes()
+        )
+
+    def test_none_matches_omitted(self):
+        a = _warm_start_ga(False, 1).run()
+        b = _warm_start_ga(False, 1, initial_population=None).run()
+        assert a.fitness_history == b.fitness_history
+
+    def test_facade_input_is_not_mutated(self):
+        rows = np.array([[100.0, 0.0, 0.0]])
+        _warm_start_ga(False, 1, initial_population=rows).run()
+        assert rows[0, 0] == 100.0
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            [0.0, 0.0, 0.0],
+            np.zeros((1, 2)),
+            np.zeros((1, 3, 1)),
+            [[0.0, float("nan"), 0.0]],
+            [[0.0, float("inf"), 0.0]],
+            [[0.0, float("-inf"), 0.0]],
+            np.zeros((9, 3)),
+            [["a", "b", "c"]],
+        ],
+        ids=["1d", "columns", "3d", "nan", "inf", "-inf", "too-many", "non-numeric"],
+    )
+    @pytest.mark.parametrize("islands", [1, 2])
+    def test_invalid_initial_population_raises(self, rows, islands):
+        with pytest.raises(ValueError, match="initial_population"):
+            _warm_start_ga(False, islands, initial_population=rows)
+
+    def test_island_total_excludes_remainder(self):
+        # 9 // 2 = 4 per island -> 8 usable slots, so 9 rows are rejected.
+        with pytest.raises(ValueError, match="initial_population"):
+            _warm_start_ga(
+                False, 2, population_size=9, initial_population=np.zeros((9, 3))
+            )
+        _warm_start_ga(False, 2, population_size=9, initial_population=np.zeros((8, 3)))
+
+    def test_low_level_engines_validate(self):
+        with pytest.raises(ValueError, match="initial_population"):
+            GeneticAlgorithm(
+                simple_fitness,
+                genome_length=3,
+                population_size=4,
+                initial_population=[[0.0, 0.0]],
+            )
+        with pytest.raises(ValueError, match="initial_population"):
+            GeneticAlgorithm(
+                simple_fitness,
+                genome_length=3,
+                population_size=4,
+                initial_population=[[0.0, float("nan"), 0.0]],
+            )
+        with pytest.raises(ValueError, match="initial_population"):
+            IslandModel(
+                simple_fitness,
+                genome_length=3,
+                num_islands=2,
+                island_population=4,
+                migration_interval=1,
+                migration_count=1,
+                initial_population=[[0.0] * 3] * 9,
+            )
+
+
+class TestParallelRestartAndImmigrants:
+    """restart_on_stagnation and random_immigrants on the process-pool GA."""
+
+    def test_restart_keeps_one_history_entry_per_generation(self, monkeypatch):
+        restarts = []
+        real = ParallelGA._replace_with_random
+
+        def spy(self, population, fitness, indices, executor, rng):
+            restarts.append(len(indices))
+            return real(self, population, fitness, indices, executor, rng)
+
+        monkeypatch.setattr(ParallelGA, "_replace_with_random", spy)
+        # Constant fitness: gen 0 improves, so stagnation hits 2 at gen 2 and 4.
+        result = _parallel_ga(restart_on_stagnation=2, elitism=2).run()
+        assert result.generations == 6
+        assert len(result.fitness_history) == result.generations + 1
+        assert restarts == [6, 6]
+
+    def test_restart_disables_early_stopping(self):
+        result = _parallel_ga(restart_on_stagnation=3, early_stopping=1).run()
+        assert result.generations == 6
+        assert len(result.fitness_history) == 7
+
+    def test_immigrants_replace_worst_individuals(self, monkeypatch):
+        sizes = []
+        real = ParallelGA._replace_with_random
+
+        def spy(self, population, fitness, indices, executor, rng):
+            sizes.append(len(indices))
+            kept = [f for i, f in enumerate(fitness) if i not in set(indices)]
+            assert max(fitness[i] for i in indices) <= min(kept)
+            return real(self, population, fitness, indices, executor, rng)
+
+        monkeypatch.setattr(ParallelGA, "_replace_with_random", spy)
+        result = _parallel_ga(fitness_fn=simple_fitness, random_immigrants=3).run()
+        assert sizes == [3] * 6
+        assert len(result.fitness_history) == result.generations + 1
+
+    def test_zero_immigrants_is_a_noop(self):
+        base = _parallel_ga(fitness_fn=simple_fitness).run()
+        zero = _parallel_ga(fitness_fn=simple_fitness, random_immigrants=0).run()
+        assert repr(base.best_fitness) == repr(zero.best_fitness)
+        np.testing.assert_array_equal(base.best_genes(), zero.best_genes())
+
+    def test_validation_matches_rust(self):
+        with pytest.raises(ValueError, match="restart_on_stagnation"):
+            _parallel_ga(restart_on_stagnation=0)
+        with pytest.raises(ValueError, match="random_immigrants"):
+            _parallel_ga(random_immigrants=9)
+
+    @pytest.mark.skipif(is_free_threaded(), reason="free-threaded always selects Rust")
+    def test_facade_forwards_without_warning(self):
+        ga = GA(
+            plateau_fitness,
+            genome_length=2,
+            population_size=8,
+            generations=4,
+            n_workers=1,
+            parallel=True,
+            seed=3,
+            restart_on_stagnation=2,
+            random_immigrants=1,
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = ga.run()
+        assert result.strategy == "parallel"
+        assert len(result.fitness_history) == result.generations + 1
+        assert [w for w in record if issubclass(w.category, UserWarning)] == []
+
+
+class TestParallelIslandTopology:
+    """migration_topology on the process-pool island path."""
+
+    EXPECTED_EDGES = {
+        "ring": {(0, 1), (1, 2), (2, 3), (3, 0)},
+        "fully_connected": {(i, j) for i in range(4) for j in range(4) if i != j},
+        "star": {(0, 1), (0, 2), (0, 3), (1, 0), (2, 0), (3, 0)},
+        "ladder": {(0, 1), (1, 0), (1, 2), (2, 1), (2, 3), (3, 2)},
+    }
+
+    @pytest.mark.parametrize("kind", sorted(EXPECTED_EDGES))
+    def test_static_routing_matches_expected_edges(self, kind):
+        rng = np.random.default_rng(0)
+        edges = {
+            (src, dst)
+            for src in range(4)
+            for dst in parallel_module._migration_destinations(kind, src, 4, rng)
+        }
+        assert edges == self.EXPECTED_EDGES[kind]
+
+    def test_random_routing_never_targets_source_and_covers_others(self):
+        rng = np.random.default_rng(0)
+        seen = set()
+        for src in range(4):
+            for _ in range(200):
+                (dst,) = parallel_module._migration_destinations("random", src, 4, rng)
+                assert dst != src
+                seen.add((src, dst))
+        assert seen == self.EXPECTED_EDGES["fully_connected"]
+
+    @pytest.mark.parametrize("kind", ["ring", "fully_connected", "random", "star", "ladder"])
+    def test_native_wrapper_kind_is_resolved(self, kind):
+        topology = getattr(MigrationTopology, kind)()
+        assert topology.kind == kind
+        assert parallel_module._resolve_topology(topology) == kind
+
+    def test_invalid_topology_is_rejected(self):
+        with pytest.raises(ValueError, match="migration_topology"):
+            _parallel_island(migration_topology="mesh")
+
+    @pytest.mark.skipif(is_free_threaded(), reason="process-pool path unreachable")
+    @pytest.mark.parametrize("kind", ["fully_connected", "random", "star", "ladder"])
+    def test_run_routes_along_topology_and_keeps_migrant_fitness(self, kind, monkeypatch):
+        calls = []
+        original = parallel_module._migration_destinations
+
+        def spy(k, source, num_islands, rng):
+            dests = original(k, source, num_islands, rng)
+            calls.append((k, source, tuple(dests)))
+            return dests
+
+        monkeypatch.setattr(parallel_module, "_migration_destinations", spy)
+        model = _parallel_island(
+            fitness_fn=strictly_negative_fitness,
+            num_islands=4,
+            migration_topology=getattr(MigrationTopology, kind)(),
+        )
+        result = model.run()
+        assert calls and {c[0] for c in calls} == {kind}
+        if kind != "random":
+            edges = {(s, d) for _, s, ds in calls for d in ds}
+            assert edges == self.EXPECTED_EDGES[kind]
+        assert result.best_fitness < 0.0
+        assert result.best_fitness == pytest.approx(
+            strictly_negative_fitness(result.best_genes())
+        )
+
+    @pytest.mark.skipif(is_free_threaded(), reason="process-pool path unreachable")
+    def test_default_is_ring_and_seeded_runs_reproduce(self):
+        def run(**kw):
+            return _parallel_island(
+                fitness_fn=strictly_negative_fitness, num_islands=3, seed=5, **kw
+            ).run()
+
+        default = run()
+        ring = run(migration_topology=MigrationTopology.ring())
+        again = run()
+        assert default.fitness_history == ring.fitness_history == again.fitness_history
+        np.testing.assert_array_equal(default.best_genes(), ring.best_genes())
+        other = run(migration_topology=MigrationTopology.fully_connected())
+        assert other.fitness_history != default.fitness_history
+
+    @pytest.mark.skipif(is_free_threaded(), reason="process-pool path unreachable")
+    def test_facade_forwards_topology_without_warning(self):
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            result = GA(
+                strictly_negative_fitness,
+                genome_length=2,
+                bounds=(-5.0, 5.0),
+                population_size=16,
+                generations=3,
+                islands=2,
+                parallel=True,
+                n_workers=1,
+                migration_interval=1,
+                migration_count=1,
+                migration_topology=MigrationTopology.star(),
+                seed=1,
+            ).run()
+        assert result.strategy == "parallel_island"
         assert [w for w in record if issubclass(w.category, UserWarning)] == []
