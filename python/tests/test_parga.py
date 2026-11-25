@@ -1,6 +1,7 @@
 """Tests for the parga Python bindings."""
 
 import warnings
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -2188,7 +2189,7 @@ class TestParallelRestartAndImmigrants:
 class TestParallelIslandTopology:
     """migration_topology on the process-pool island path."""
 
-    EXPECTED_EDGES = {
+    EXPECTED_EDGES: ClassVar[dict[str, set[tuple[int, int]]]] = {
         "ring": {(0, 1), (1, 2), (2, 3), (3, 0)},
         "fully_connected": {(i, j) for i in range(4) for j in range(4) if i != j},
         "star": {(0, 1), (0, 2), (0, 3), (1, 0), (2, 0), (3, 0)},
